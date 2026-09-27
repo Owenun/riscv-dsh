@@ -12,7 +12,7 @@
 | D1 | 实现语言 | C99 |
 | D2 | syscall 约定 | Linux RV64 ABI 兼容子集（编号与语义对齐 Linux，见 §5） |
 | D3 | 测试 oracle | 自校验程序 + 金标准输出 + 宿主双编译差分（见 §8），不引入 qemu |
-| D4 | 指令范围 | 严格 RV64I + Zifencei（52 条），无 M/A/C/F/D/Zicsr |
+| D4 | 指令范围 | 严格 RV64I + Zifencei（53 条 = 52 条 RV64I base + Zifencei 的 FENCE.I），无 M/A/C/F/D/Zicsr |
 | D5 | 核心架构 | 方案 A：直接解释器（取指→switch 解码→执行），无解码缓存 |
 | D6 | 差分参考 qemu | 不使用。理由：mini-qemu 为 M-mode 裸机模拟器无法运行用户态 Linux 程序；qemu-user 需 sudo 安装且引入外部依赖；D3 的双编译差分已提供独立 oracle |
 | D7 | 工具链 | 复用 `/home/xzc/projects/mini-qemu/work/output/host/bin` 的 Buildroot musl 交叉工具链（仅编译测试程序，见 TOOLCHAIN.md） |
@@ -112,17 +112,17 @@ stack     [0x1F80F000, 0x2000F000)，STACK_TOP = 0x2000F000
 - `x0..x31`（u64，x0 恒 0，写入丢弃）、`pc`。无 CSR（Zicsr 不在范围）。
 - 指令提交模型：一条指令要么完整生效（写回/访存/pc 更新），要么完全不生效并报故障。访存先检查后写入，失败不产生部分写。
 
-### 4.2 指令集（52 条）
+### 4.2 指令集（53 条 = 52 条 RV64I base + Zifencei 的 FENCE.I）
 语义以 RISC-V 非特权级规范（Unprivileged ISA, ratified 20211203）为准，此处只记录实现要点与易错语义：
 
 | 组 | 指令 | 实现要点 |
 |----|------|----------|
-| 立即数算术(9) | ADDI SLTI SLTIU XORI ORI ANDI SLLI SRLI SRAI | I 型立即数符号扩展；SLLI/SRLI/SRAI 的 shamt=imm[5:0]，**imm[11:6]≠0 → 非法指令**；SLTIU 按无符号比较（立即数仍符号扩展后按 u64 比） |
-| 寄存器算术(10) | ADD SUB SLL SLT SLTU XOR SRL SRA OR AND | SRA/SRL 的移位量取 rs1 低 6 位；SLT/SLTU 结果 0/1 |
-| W 类(9) | ADDIW SLLIW SRLIW SRAIW ADDW SUBW SLLW SRLW SRAW | 32 位运算后**符号扩展到 64**；SLLIW/SRLIW/SRAIW 的 imm[11:6]≠0 → 非法；ADDIW 的立即数是符号扩展 I 型 |
+| 立即数算术(9) | ADDI SLTI SLTIU XORI ORI ANDI SLLI SRLI SRAI | I 型立即数符号扩展；SLLI/SRLI/SRAI 的 shamt=imm[5:0]，**imm[11:6]≠0 → 非法指令**（SRAI 的 funct7=0100000，imm[11:6]=010000 属合法）；SLTIU 按无符号比较（立即数仍符号扩展后按 u64 比） |
+| 寄存器算术(10) | ADD SUB SLL SLT SLTU XOR SRL SRA OR AND | SRA/SRL 的移位量取 rs2 低 6 位（W 类低 5 位）；SLT/SLTU 结果 0/1 |
+| W 类(9) | ADDIW SLLIW SRLIW SRAIW ADDW SUBW SLLW SRLW SRAW | 32 位运算后**符号扩展到 64**；SLLIW/SRLIW/SRAIW 的 imm[11:5]=0000000（SLLIW/SRLIW）/0100000（SRAIW），即 funct7 校验，shamt 仅 5 位，不匹配 → 非法；ADDIW 的立即数是符号扩展 I 型 |
 | 访存(11) | LB LH LW LD LBU LHU LWU SB SH SW SD | 符号/零扩展规则按规范；有效地址 = rs1+imm 按 2^64 回绕 |
 | 控制流(10) | LUI AUIPC JAL JALR BEQ BNE BLT BGE BLTU BGEU | LUI 符号扩展 32→64；JALR 清目标 bit0；BLT/BGE 有符号、BLTU/BGEU 无符号；B 型偏移 13 位符号扩展 |
-| 系统(4) | FENCE FENCE.I ECALL EBREAK | 单 hart 顺序一致 → FENCE/FENCE.I 无副作用退休；ECALL 进 syscall 分发；EBREAK = 停机诊断（退出码 206） |
+| 系统(4) | FENCE FENCE.I ECALL EBREAK | 单 hart 顺序一致 → FENCE/FENCE.I 无副作用退休（FENCE.I 的 imm 为保留字段须为 0，imm≠0 → 非法指令）；ECALL 进 syscall 分发；EBREAK = 停机诊断（退出码 206） |
 
 保留编码（opcode/funct3/funct7 不匹配上表）→ 非法指令，退出码 204。
 

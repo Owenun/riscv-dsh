@@ -47,4 +47,33 @@ typedef struct { uint64_t entry, brk_base, bias; } rv_elf;
    （含容量超限：PT_LOAD 段数 > RVSIM_RGN_MAX - m->n，在 mem_add_region 之前返回）
    -5 无 PT_LOAD -6 PT_INTERP -7 entry 越界（全部映射退出码 201） */
 int elf_load(rv_mem *m, const char *path, rv_elf *out);
+
+/* ---- decode 模块（Task 5）---- */
+typedef enum { RV_LUI, RV_AUIPC, RV_JAL, RV_JALR, RV_BEQ, RV_BNE, RV_BLT, RV_BGE,
+  RV_BLTU, RV_BGEU, RV_LB, RV_LH, RV_LW, RV_LD, RV_LBU, RV_LHU, RV_LWU,
+  RV_SB, RV_SH, RV_SW, RV_SD, RV_ADDI, RV_SLTI, RV_SLTIU, RV_XORI, RV_ORI,
+  RV_ANDI, RV_SLLI, RV_SRLI, RV_SRAI, RV_ADD, RV_SUB, RV_SLL, RV_SLT, RV_SLTU,
+  RV_XOR, RV_SRL, RV_SRA, RV_OR, RV_AND, RV_ADDIW, RV_SLLIW, RV_SRLIW, RV_SRAIW,
+  RV_ADDW, RV_SUBW, RV_SLLW, RV_SRLW, RV_SRAW, RV_FENCE, RV_FENCEI,
+  RV_ECALL, RV_EBREAK, RV_OP_COUNT } rv_op;
+/* rv_dec 非相关字段（如 U/J 型的 rs1/rs2、R 型的 imm）为编码残留位：
+   rv_decode 仅保证与该指令格式相关字段有效，其余字段值未定义，
+   消费方（cpu 执行层）不得依赖。 */
+typedef struct { rv_op op; uint8_t rd, rs1, rs2; uint32_t raw; int64_t imm; } rv_dec;
+bool rv_decode(uint32_t insn, rv_dec *d);   /* false = 非法/保留编码 */
+
+/* ---- cpu 执行模块（Task 6）---- */
+typedef struct { uint64_t x[32], pc; uint64_t steps; } rv_cpu;
+/* 取指/执行故障码：rv_step 失败时写入 s->fault 并作为返回值；0=本步成功退休。 */
+enum { RV_FV_NONE = 0, RV_FV_UNMAPPED = 1, RV_FV_MISALIGNED = 2, RV_FV_ILLEGAL = 3 };
+typedef struct {
+    rv_mem mem; rv_cpu cpu;
+    int fault;                  /* RV_FV_*；rv_step 返回前设置 */
+    bool exited; int exit_code; /* guest 正常退出/EBREAK 等（Task 10 接入，本任务不触发） */
+} rvsim;
+/* 结构体布局说明：本任务按接口契约定稿（mem/cpu/fault/exited/exit_code）；
+   后续任务（Task 10 等）只允许在结构体尾部追加字段，不得插入或重排现有成员。 */
+void rvsim_reset(rvsim *s);    /* 清零 cpu/fault/exited；mem 由调用方 init */
+int  rv_step(rvsim *s);        /* 取指+解码+执行一条；返回 s->fault（0=成功退休）。
+                                  故障路径无部分副作用：不写回、不推进 pc、不计数。 */
 #endif

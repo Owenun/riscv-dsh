@@ -10,6 +10,10 @@ run_l0() { # run_l0 <name> <src...>
 mkdir -p build
 run_l0 test_framework tests/test_framework.c
 run_l0 test_mem tests/test_mem.c src/mem.c
+run_l0 test_decode tests/test_decode.c src/decode.c
+run_l0 test_alu tests/test_alu.c src/mem.c src/decode.c src/cpu.c
+run_l0 test_shift tests/test_shift.c src/mem.c src/decode.c src/cpu.c
+run_l0 test_wops tests/test_wops.c src/mem.c src/decode.c src/cpu.c
 
 # L1 mini-crt：构建级验证（编译出纯 RV64I 静态 ELF；e2e 执行由 M5/Task 11 接入）
 CROSS_PREFIX=${CROSS_PREFIX:-/home/xzc/projects/mini-qemu/work/output/host/bin/riscv64-buildroot-linux-musl-}
@@ -20,6 +24,29 @@ fi
 if "$CROSS_PREFIX"objdump -d tests/guest-bin/t_hello.elf 2>/dev/null |
    grep -qE '\b(mul|mulh|div|rem|amo|lr\.|sc\.)'; then
     echo "t_hello uses M/A insn"; FAIL=1
+fi
+
+# L1 runner：执行 guest ELF + diff golden + 退出码检查（rvsim 可执行 ELF 后启用，M5/Task 11 接入）
+run_guest() { # run_guest <name>
+    local name=$1
+    local out="build/$name.stdout" err="build/$name.stderr"
+    build/rvsim "tests/guest-bin/$name.elf" >"$out" 2>"$err"
+    local rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "L1 $name: RUN FAIL exit=$rc"; FAIL=1
+        cat "$err"   # 回显 rvsim 结构化诊断（stderr 落盘后在此显示）
+        return
+    fi
+    if diff -u "tests/golden/$name.out" "$out" >/dev/null; then
+        echo "L1 $name: PASS"
+    else
+        echo "L1 $name: OUTPUT MISMATCH"; FAIL=1
+    fi
+}
+# rvsim 尚不能执行用户态 ELF（M5/Task 11 接入 syscall/栈初始化后置 1；可用环境变量覆盖）
+RVSIM_CAN_RUN=${RVSIM_CAN_RUN:-0}
+if [ "$RVSIM_CAN_RUN" = 1 ]; then
+    run_guest t_arith; run_guest t_imm_edges; run_guest t_shift; run_guest t_wops
 fi
 
 # L2 elf：装载好 ELF（依赖上方 build_guest 产出的 t_hello.elf）
