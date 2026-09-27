@@ -12,7 +12,7 @@
 
 ## 全局约束
 
-- 语言 C99；宿主构建 `cc -std=c99 -g -O2 -Wall -Wextra -pedantic`；guest 构建 `-march=rv64i -mabi=lp64 -nostdlib -static`。
+- 语言 C99；宿主构建 `cc -std=c99 -g -O2 -Wall -Wextra -pedantic`；guest 构建 `-march=rv64i -mabi=lp64 -nostdlib -static -ffreestanding -fno-stack-protector`（后两个 flag 为 M0 评审裁决追加：buildroot musl gcc 默认 stack-protector 与内建 strlen 在 -nostdlib 下无法链接）。
 - 指令范围 = RV64I 52 条（40 基础 + 12 条 RV64 专属含 W 类）+ FENCE/FENCE.I/ECALL/EBREAK；M/A/C/F/D/Zicsr 编码一律判非法（退出码 204）。
 - 内存常量：`MEM_BASE=0x10000`、`MEM_SIZE=0x20000000`(512MiB)、`MMAP_BASE=0x10000000`、mmap 容量 64MiB、heap 容量 32MiB、`STACK_SIZE=0x800000`、`STACK_TOP=0x2000F000`、`ET_DYN bias=0x100000`。
 - 对齐规则：LH/LHU/SH 2 对齐，LW/LWU/SW 4 对齐，LD/SD/取指 8/4 对齐，JAL/JALR/分支目标 4 对齐（JALR 先清 bit0）；违反 → 203，未映射 → 202，且故障指令不产生部分副作用。
