@@ -3,7 +3,9 @@
    全路径：enc.h 编码 → mem 取指 → rv_decode → 执行 → 写回。
    期望值全部手算；寄存器移位（SLL/SRL/SRA）移位量取 rs2 低 6 位（RISC-V
    非特权级规范；设计文档 §4.2 写作 rs1 系笔误，见 task-6-report）。
-   简报骨架中 SLTI/SLTIU/SLT/SLTU 四处期望值与手算相反，已修正留档。 */
+   简报骨架中 SLTI/SLTIU/SLT/SLTU 四处期望值与手算相反，已修正留档。
+   Task 8（M3）适配：访存组执行臂接入后，故障契约探针由 LD 换为仍属
+   未实现组的 JAL（断言意图不变：可解码但无执行臂 → ILLEGAL 且零副作用）。 */
 #include "harness.h"
 #include "enc.h"
 
@@ -88,8 +90,13 @@ int main(void)
 
         reset_sim();
         {
-            uint32_t ld = ENC_I(8, 10, 3, 12, 0x03); /* LD：可解码但本任务无执行臂 */
-            CHECK(mem_write(&hs.mem, MEM_BASE, &ld, 4) == 0);
+            uint32_t jal = 0x0000006Fu;              /* JAL x0,0：可解码但控制流组无执行臂
+                                                        （访存组已由 Task 8 接入，探针换 JAL）。
+                                                        预告（M3 修复轮）：M4 控制流组接入后
+                                                        JAL 将有执行臂，本探针随之失效；届时
+                                                        改用 FENCE/ECALL 组编码作「可解码但
+                                                        无执行臂 → ILLEGAL」探针。 */
+            CHECK(mem_write(&hs.mem, MEM_BASE, &jal, 4) == 0);
         }
         hs.cpu.x[12] = 0xDEADBEEFCAFEBABEULL;        /* 确认无写回副作用 */
         r = rv_step(&hs);

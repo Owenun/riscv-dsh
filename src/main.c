@@ -1,2 +1,3 @@
 #include <stdio.h>
-int main(void) { fprintf(stderr, "rvsim: usage <elf>\n"); return 200; }
+#include "rvsim.h"
+int main(void) { fprintf(stderr, "rvsim: usage <elf>\n"); return RVSIM_EX_USAGE; }
