@@ -53,7 +53,7 @@ tests/golden/*.out          L1 金标准与 L3 快照
 
 ---
 
-### 任务 1（M0-a）：构建骨架 + L0 测试框架
+### Task 1（M0-a）：构建骨架 + L0 测试框架
 
 **文件：**
 - 新建：`Makefile`、`include/rvsim.h`、`src/main.c`、`tests/framework.h`、`tests/test_framework.c`、`tests/run_all.sh`、`.gitignore`（已存在则核对）
@@ -159,7 +159,7 @@ int main(void) { fprintf(stderr, "rvsim: usage <elf>\n"); return 200; }
 - [ ] **步骤 4：确认通过** —— `make test`，预期输出 `L0 test_framework: PASS`，退出 0。
 - [ ] **步骤 5：不提交**（M0 在任务 2 结束统一提交）。
 
-### 任务 2（M0-b）：mini-crt + guest 构建管线（M0 收尾，含 commit）
+### Task 2（M0-b）：mini-crt + guest 构建管线（M0 收尾，含 commit）
 
 **文件：**
 - 新建：`tests/guest/guest.h`、`tests/guest/guest_sys.S`、`tests/guest/guest_lib.c`、`tests/host/shim.c`、`tests/build_guest.sh`、`tests/guest/t_hello.c`、`tests/golden/t_hello.out`
@@ -295,7 +295,7 @@ git add -A && git commit -m "M0: 构建骨架、L0 测试框架、mini-crt 与 g
 
 提交前：`make && make test` 全绿；code-review 本里程碑 diff。
 
-### 任务 3（M1-a）：mem 模块（TDD）
+### Task 3（M1-a）：mem 模块（TDD）
 
 **文件：**
 - 新建：`src/mem.c`、`src/mem.h`、`tests/test_mem.c`
@@ -384,7 +384,7 @@ int mem_write(rv_mem *m, uint64_t a, const void *src, uint64_t n) {
 - [ ] **步骤 4：确认通过** —— `make test` → `L0 test_mem: PASS`。
 - [ ] **步骤 5：不提交**（M1 收尾统一提交）。
 
-### 任务 4（M1-b）：elf 模块 + L4 畸形 ELF（M1 收尾，含 commit）
+### Task 4（M1-b）：elf 模块 + L4 畸形 ELF（M1 收尾，含 commit）
 
 **文件：**
 - 新建：`src/elf.c`、`tests/test_elf.c`、`tests/make_bad_elf.sh`
@@ -468,7 +468,7 @@ done
 - [ ] **步骤 4：确认通过** —— `make test` → `L0 test_elf: PASS` 且 4 个 L4 用例 PASS。
 - [ ] **步骤 5：提交（M1）**：`git add -A && git commit -m "M1: mem/elf 模块 + L4 畸形 ELF 注入测试"`
 
-### 任务 5（M2-a）：decode 模块（TDD）
+### Task 5（M2-a）：decode 模块（TDD）
 
 **文件：**
 - 新建：`src/decode.c`、`tests/enc.h`、`tests/test_decode.c`
@@ -529,7 +529,7 @@ int main(void) {
 - [ ] **步骤 4：确认通过** —— `make test` → `L0 test_decode: PASS`。
 - [ ] **步骤 5：不提交。**
 
-### 任务 6（M2-b）：rv_step 核心 + 整数/移位指令（TDD）
+### Task 6（M2-b）：rv_step 核心 + 整数/移位指令（TDD）
 
 **文件：**
 - 新建：`src/cpu.c`、`tests/test_alu.c`、`tests/test_shift.c`、`tests/test_wops.c`
@@ -584,7 +584,7 @@ int main(void) {
 - [ ] **步骤 4：确认通过** —— `make test` 全绿。
 - [ ] **步骤 5：不提交。**
 
-### 任务 7（M2-c）：M2 收尾 guest 程序 + commit
+### Task 7（M2-c）：M2 收尾 guest 程序 + commit
 
 - [ ] **步骤 1：失败测试** —— 新建 `tests/guest/t_arith.c`、`t_imm_edges.c`、`t_shift.c`、`t_wops.c`。示例 `t_arith.c`（其余同构，各自覆盖规格 §8.3 对应边界，全部用 `CHECK_G(__LINE__, …)`）：
 
@@ -606,7 +606,7 @@ int main(void) {
 - [ ] **步骤 2：确认失败→通过** —— guest 编译失败会红；补实现后 `make test` 绿。注意 guest 侧编译器若因 `a+1` 有符号溢出告警，改用无符号运算+显式比较实现（不改预期值）。
 - [ ] **步骤 3：提交（M2）**：`git commit -m "M2: decode + 整数/移位/W 类指令 + L0/L1 测试"`
 
-### 任务 8（M3）：访存 11 条 + 对齐/未映射故障（M3 收尾，含 commit）
+### Task 8（M3）：访存 11 条 + 对齐/未映射故障（M3 收尾，含 commit）
 
 **文件：**
 - 修改：`src/cpu.c`（访存臂 + 故障检查）、`tests/test_memops.c`、新增 `tests/guest/t_load_store.c`、`t_x0.c` 与 golden
@@ -627,7 +627,7 @@ guest 侧 `t_load_store.c` 覆盖全部 11 条正反例（用 `CHECK_G`），`t_
 - [ ] **步骤 2：确认失败** → 步骤 3：实现访存臂（先对齐检查 → mem_read/write → 扩展/截断写回；store 的 imm 用 S 型）；步骤 4：`make test` 全绿。
 - [ ] **步骤 5：提交（M3）**：`git commit -m "M3: load/store 11 条 + 对齐与未映射故障"`
 
-### 任务 9（M4）：控制流 10 条（M4 收尾，含 commit）
+### Task 9（M4）：控制流 10 条（M4 收尾，含 commit）
 
 **文件：**
 - 修改：`src/cpu.c`、`tests/test_flow.c`、新增 `tests/guest/t_branch.c`、`t_call.c`、`t_recursion.c`、`t_bubble.c`、`t_string.c`、`t_fib.c` 与 golden
@@ -636,7 +636,7 @@ guest 侧 `t_load_store.c` 覆盖全部 11 条正反例（用 `CHECK_G`），`t_
 - [ ] **步骤 4：确认通过** + guest 程序接入 build_guest.sh 与 golden（`t_bubble.c` 同时用于 L2：`tests/run_all.sh` 加宿主 twin 构建比对 `cc -O2 -std=c99 -Itests/guest -o build/host_t_bubble tests/guest/t_bubble.c tests/host/shim.c`，两侧 stdout 与退出码必须一致）。
 - [ ] **步骤 5：提交（M4）**：`git commit -m "M4: 控制流 10 条 + L2 双编译差分(t_bubble)"`
 
-### 任务 10（M5-a）：fence/ecall/ebreak + syscall 模块（TDD）
+### Task 10（M5-a）：fence/ecall/ebreak + syscall 模块（TDD）
 
 **文件：**
 - 新建：`src/syscall.c`、`tests/test_syscall.c`
@@ -668,7 +668,7 @@ rv_sc_ret rv_syscall(rvsim *s, uint64_t num, uint64_t a0, uint64_t a1,
 - [ ] **步骤 2：确认失败** → **步骤 3：实现** `src/syscall.c`（逐项按规格 §5；read/write 仅转发 `s->host_fd[]`；brk/mmap 操作 mem 区域登记；EBREAK 由 cpu.c 置 `exited, exit_code=RVSIM_EX_EBREAK`；FENCE/FENCE.I 为空操作退休）→ **步骤 4**：`make test` 全绿。
 - [ ] **步骤 5：不提交。**
 
-### 任务 11（M5-b）：main 装配 + 栈初始化 + 首个端到端（M5 收尾，含 commit）
+### Task 11（M5-b）：main 装配 + 栈初始化 + 首个端到端（M5 收尾，含 commit）
 
 **文件：**
 - 修改：`src/main.c`、`src/cpu.c`（build_stack）、`tests/run_all.sh`（L1 e2e 接入）
@@ -694,7 +694,7 @@ run_guest t_arith
 - [ ] **步骤 3：确认通过** —— `make test`：`L1 t_hello/t_arith/t_argv: PASS`（首个端到端闭环）。
 - [ ] **步骤 4：提交（M5）**：`git commit -m "M5: syscall 子集 + 栈初始化 + 首个端到端 t_hello"`
 
-### 任务 12（M6-a）：CLI 可观测性（-v/-vv/--trace/--dump-regs/--dump-mem/--max-steps）
+### Task 12（M6-a）：CLI 可观测性（-v/-vv/--trace/--dump-regs/--dump-mem/--max-steps）
 
 **文件：**
 - 新建：`src/trace.c`、`src/cli.c`（从 stub 扩展）、`tests/test_trace.c`、golden 快照 `tests/golden/snap_*.out`
@@ -714,7 +714,7 @@ snap snap_limit  ./build/rvsim --max-steps 10 tests/guest-bin/t_fib.elf   # 退�
 - [ ] **步骤 2：确认失败** → **步骤 3：实现**（trace 行格式 `T <seq> pc=0x<16hex> insn=0x<8hex> <助记名>[ rd=xN=0x<16hex>]`；-v/-vv 走 stderr；dump 格式按规格 §6）→ **步骤 4**：全绿。
 - [ ] **步骤 5：不提交。**
 
-### 任务 13（M6-b）：交互调试器（M6 收尾，含 commit）
+### Task 13（M6-b）：交互调试器（M6 收尾，含 commit）
 
 **文件：**
 - 新建：`src/debugger.c`、golden `tests/golden/dbg_*.out`
@@ -730,13 +730,13 @@ printf 'm 0x100000 16\nc\n' | ./build/rvsim -s ...                   # 内存查
 - [ ] **步骤 2：确认失败** → **步骤 3：实现**（命令循环按规格 §6.2：s/c/r/m/b/d/q/h；断点 8 个上限；stdin EOF=q）→ **步骤 4**：全绿。
 - [ ] **步骤 5：提交（M6）**：`git commit -m "M6: CLI 可观测性 + 交互调试器 + L3 快照测试"`
 
-### 任务 14（M7-a）：测试矩阵收口（剩余 guest 程序 + 全边界补齐）
+### Task 14（M7-a）：测试矩阵收口（剩余 guest 程序 + 全边界补齐）
 
 - [ ] **步骤 1：失败测试** —— 补齐规格 §8.4 全部 20 个程序中尚缺者：`t_mmap.c`、`t_brk.c`、`t_uname.c`、`t_clock.c`、`t_badcall.c`（错误路径断言 + golden 含 stderr 诊断行，`run_guest_err` 函数比对退出码 205 与 `rvsim: unsupported syscall` 前缀）、`t_maxsteps.c`（207）、`t_misaligned.c`（203）。每程序先加 runner（红）再写程序（绿）。
 - [ ] **步骤 2：边界复核** —— 对照规格 §8.3 清单逐项勾验，缺测补测（每个补测同样先红后绿）。
 - [ ] **步骤 3：确认通过** —— `make && make guest && make test` 全绿；`bash tests/run_all.sh | tee /tmp/regression.txt` 存档。
 
-### 任务 15（M7-b）：验收收尾（M7 收尾，最终 commit）
+### Task 15（M7-b）：验收收尾（M7 收尾，最终 commit）
 
 - [ ] **步骤 1：README**（构建/运行/调试示例 + 测试说明）。
 - [ ] **步骤 2：code-review** —— 加载 superpower-requesting-code-review，对全量 diff 评审；发现问题按 TDD 修复（先补失败测试）。
