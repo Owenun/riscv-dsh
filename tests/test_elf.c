@@ -17,11 +17,19 @@ int main(int argc, char **argv) {
     /* 装载后 entry 处可取指：前 4 字节非零 */
     uint32_t w = 0;
     CHECK(mem_read(&m, e.entry, &w, 4) == 0 && w != 0);
-    /* 坏 ELF：argv[1]=路径 argv[2]=期望负错误码 */
+    /* 坏 ELF：argv[1]=路径 argv[2]=期望负错误码。
+       修复轮 1（C-1）：坏 ELF 一律在干净 mem（n=0）上装载——沿用前置好 ELF
+       装载后的 m（n>0）会掩盖"恰满容量"边界：64 段 PT_LOAD 必须在 n=0 时
+       也判 -4（需为 main 的 heap/stack 预留 2 槽）。 */
     if (argc == 3) {
         int want = atoi(argv[2]);
+        mem_free(&m);
+        CHECK(mem_init(&m) == 0);
         CHECK(elf_load(&m, argv[1], &e) == want);
     }
+    /* 修复轮 1（I-1）：文件打不开 → 细分码 -8（用法错误族，main 映射 200）。
+       置于坏 ELF 块之后：避免本检查先行失败遮蔽上方逐项 L4 断言的独立红。 */
+    CHECK(elf_load(&m, "tests/guest-bin/no-such-file.elf", &e) == -8);
     mem_free(&m);
     TEST_DONE();
 }

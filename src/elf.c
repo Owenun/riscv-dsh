@@ -27,11 +27,16 @@ static uint64_t rd64(const uint8_t *p) {
 #define ET_DYN    3u
 #define ELFCLASS64 2u
 
+/* main 装配在 elf_load 之后恒追加 2 项登记（heap 空区 + stack 区，src/main.c），
+   容量检查必须为其预留 2 槽，否则恰好 64 段 PT_LOAD 的合法 ELF 会在 main 侧
+   越过 rgn[RVSIM_RGN_MAX-1] 越界写（评审 C-1，ASan 实证 SEGV WRITE）。 */
+#define RVSIM_MAIN_RGN_RESERVE 2u
+
 static uint64_t page_up(uint64_t x) { return (x + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1); }
 
 int elf_load(rv_mem *m, const char *path, rv_elf *out) {
     FILE *f = fopen(path, "rb");
-    if (!f) return -4;                       /* 文件不可读：归入截断/装载失败族 */
+    if (!f) return -8;                       /* 文件打不开：用法错误族（spec §7 → 200，修复轮 1/I-1） */
     long szl = -1;
     if (fseek(f, 0, SEEK_END) == 0) { szl = ftell(f); fseek(f, 0, SEEK_SET); }
     if (szl < 0) { fclose(f); return -4; }
@@ -80,8 +85,13 @@ int elf_load(rv_mem *m, const char *path, rv_elf *out) {
 
     /* 容量检查（仍在校验阶段，零副作用）：mem_add_region 无界，越 rgn[RVSIM_RGN_MAX]
        即越界写；且 mem 里可能已有调用方登记的区域，必须按剩余容量判断。
-       超限按装载失败族返回 -4（契约见 rvsim.h），绝不进入第二遍登记。 */
-    if (m->n > RVSIM_RGN_MAX || nload > RVSIM_RGN_MAX - m->n) { free(buf); return -4; }
+       预留 RVSIM_MAIN_RGN_RESERVE=2 槽给 main 装配恒追加的 heap/stack 登记
+       （elf_load 是唯一批量登记者，nload+2 连同 m->n 不得越过 RVSIM_RGN_MAX，
+       修复轮 1/C-1）。超限按装载失败族返回 -4（契约见 rvsim.h），绝不进入
+       第二遍登记。 */
+    if (m->n > RVSIM_RGN_MAX || nload + RVSIM_MAIN_RGN_RESERVE > RVSIM_RGN_MAX - m->n) {
+        free(buf); return -4;
+    }
 
     /* entry：4 对齐、在窗口内、且落在某 PT_LOAD 装载范围（含 bss）内 */
     uint64_t entry = rd64(buf + 24);
@@ -98,7 +108,7 @@ int elf_load(rv_mem *m, const char *path, rv_elf *out) {
 
     /* ---- 第二遍：登记区域 + 复制。memsz>filesz 的 bss 零页由 mem_init 的 calloc
         天然保证，这里不做整块清零，以免破坏已写入数据。到达此处的 nload 已通过
-        上方剩余容量检查，n 不会越过 rgn[RVSIM_RGN_MAX]。 ---- */
+        上方剩余容量检查（含 main 的 2 槽预留），n 不会越过 rgn[RVSIM_RGN_MAX]。 ---- */
     for (uint16_t i = 0; i < phnum; i++) {
         const uint8_t *p = base + (uint64_t)i * ELF_PHDR_SIZE;
         if (rd32(p) != PT_LOAD) continue;

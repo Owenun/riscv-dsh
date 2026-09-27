@@ -92,18 +92,18 @@ int main(void)
 
         reset_sim();
         {
-            uint32_t fence = 0x0000000Fu;            /* FENCE：可解码但系统组无执行臂
-                                                        （M4 分发 A：控制流组已接入，
-                                                        按 M3 预告由 JAL 换为 FENCE——
-                                                        可解码、仍无执行臂 → ILLEGAL）。 */
+            uint32_t fence = 0x0000000Fu;            /* FENCE：M5/Task 10 已接入系统臂
+                                                        （单 hart 顺序一致 → 无副作用
+                                                        退休，spec §4.2；此前无执行臂
+                                                        时的 ILLEGAL 预期随之废止）。 */
             CHECK(mem_write(&hs.mem, MEM_BASE, &fence, 4) == 0);
         }
-        hs.cpu.x[12] = 0xDEADBEEFCAFEBABEULL;        /* 确认无写回副作用 */
+        hs.cpu.x[12] = 0xDEADBEEFCAFEBABEULL;        /* FENCE 无写回（rd 恒 0） */
         r = rv_step(&hs);
-        CHECK(r == RV_FV_ILLEGAL);
+        CHECK(r == 0);                               /* 正常退休，不再判 ILLEGAL */
         CHECK(hs.cpu.x[12] == 0xDEADBEEFCAFEBABEULL);
-        CHECK(hs.cpu.pc == MEM_BASE);
-        CHECK(hs.cpu.steps == 0);
+        CHECK(hs.cpu.pc == MEM_BASE + 4);
+        CHECK(hs.cpu.steps == 1);
     }
 
     TEST_DONE();

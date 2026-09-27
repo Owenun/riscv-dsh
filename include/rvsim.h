@@ -30,8 +30,9 @@ typedef struct { uint64_t lo, hi; int kind; } rv_region;   /* [lo,hi)，kind: 0=
 typedef struct { uint8_t *data; rv_region rgn[RVSIM_RGN_MAX]; uint32_t n; } rv_mem;
 /* rgn 容量上限 RVSIM_RGN_MAX=64 的前提：区域按登记次数计项（ELF 各 PT_LOAD 段、
    heap、mmap 每块、stack 各占一项），正常 guest 用量远小于 64。mem_add_region 本身
-   不做静默丢弃也无界——调用层必须先校验剩余容量（elf_load 检查 nload，Task 10 的
-   mmap 层检查区域数），超限在调用层拒绝，绝不可越过 rgn[RVSIM_RGN_MAX] 写入。 */
+   不做静默丢弃也无界——调用层必须先校验剩余容量（elf_load 检查 nload+2，其中 2 槽
+   为 main 装配恒追加的 heap/stack 预留，修复轮 1/C-1；Task 10 的 mmap 层检查区域数），
+   超限在调用层拒绝，绝不可越过 rgn[RVSIM_RGN_MAX] 写入。 */
 int  mem_init(rv_mem *m);                                   /* 0=ok，-1=OOM(将来映射退出码 208) */
 void mem_free(rv_mem *m);
 void mem_add_region(rv_mem *m, uint64_t lo, uint64_t hi, int kind);
@@ -44,8 +45,9 @@ int  mem_write(rv_mem *m, uint64_t a, const void *src, uint64_t n);
 /* ---- elf 模块 ---- */
 typedef struct { uint64_t entry, brk_base, bias; } rv_elf;
 /* elf_load 返回 0=ok；负数=错误细分：-1 magic -2 class -3 machine -4 截断/装载失败
-   （含容量超限：PT_LOAD 段数 > RVSIM_RGN_MAX - m->n，在 mem_add_region 之前返回）
-   -5 无 PT_LOAD -6 PT_INTERP -7 entry 越界（全部映射退出码 201） */
+   （含容量超限：PT_LOAD 段数 + 2（为 main 的 heap/stack 登记预留）> RVSIM_RGN_MAX - m->n，
+   在 mem_add_region 之前返回） -5 无 PT_LOAD -6 PT_INTERP -7 entry 越界
+   -8 文件打不开（修复轮 1/I-1：用法错误族，main 映射退出码 200；其余细分映射 201） */
 int elf_load(rv_mem *m, const char *path, rv_elf *out);
 
 /* ---- decode 模块（Task 5）---- */
@@ -70,10 +72,35 @@ typedef struct {
     rv_mem mem; rv_cpu cpu;
     int fault;                  /* RV_FV_*；rv_step 返回前设置 */
     bool exited; int exit_code; /* guest 正常退出/EBREAK 等（Task 10 接入，本任务不触发） */
+    /* ---- 以下为 Task 10（M5）尾部追加字段（不得插入/重排上方成员） ---- */
+    uint64_t brk_base, brk_cur; /* heap 区间 [brk_base, brk_cur)，cap HEAP_CAP=32MiB；
+                                   rvsim_reset 置 0，正式赋值在 main 装配
+                                   （elf_load 返回 brk 基址后登记 heap 区，分发 B） */
+    uint64_t mmap_top;          /* 下一块 mmap 起始（MMAP_BASE 起 bump 向上） */
+    int host_fd[3];             /* guest fd 0/1/2 → 宿主 fd，默认 {0,1,2} */
+    bool sc_unsupported;        /* ECALL 命中不支持号码（exit_code=205）时置位 */
+    int unsupported_syscall_num;/* 上述号码，供 main/trace 打印诊断（cpu 不依赖 stdio） */
 } rvsim;
 /* 结构体布局说明：本任务按接口契约定稿（mem/cpu/fault/exited/exit_code）；
    后续任务（Task 10 等）只允许在结构体尾部追加字段，不得插入或重排现有成员。 */
 void rvsim_reset(rvsim *s);    /* 清零 cpu/fault/exited；mem 由调用方 init */
 int  rv_step(rvsim *s);        /* 取指+解码+执行一条；返回 s->fault（0=成功退休）。
-                                  故障路径无部分副作用：不写回、不推进 pc、不计数。 */
+                                故障路径无部分副作用：不写回、不推进 pc、不计数。 */
+
+/* 进程栈初始化（Task 11/M5 分发 B，spec §3.4 精确布局）：自 STACK_TOP 向下
+   构造 AT_RANDOM(0x42*16)/argv 字符串区/argc/argv+NULL/envp NULL/auxv
+   {AT_PAGESZ,AT_RANDOM,AT_NULL}，sp 16 对齐并写入 x2；gargs[0] 为 guest
+   argv[0]（ELF 路径本身）。返回 0=ok，-1=mem 写失败（调用方映射退出码 208）。
+   须在 rvsim_reset 之后、设置 pc=entry 之前调用（a0/a1/a2 保持 reset 的 0）。 */
+int build_stack(rvsim *s, int argc, char **gargs);
+
+/* ---- syscall 模块（Task 10/M5）---- */
+/* 语义权威：docs/specs/2026-09-27-rvsim-design.md §5。
+   kind: 0=返回值（val 写回 guest a0，负数即 -errno，Linux 失败语义）
+         1=guest exit（val = 退出码，cpu 侧置 exited/exit_code，不推进 pc）
+         2=不支持号码（cpu 侧置 exited/exit_code=205 并记录号码，诊断由
+           main/trace 层打印） */
+typedef struct { int kind; int64_t val; } rv_sc_ret;
+rv_sc_ret rv_syscall(rvsim *s, uint64_t num, uint64_t a0, uint64_t a1,
+                     uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5);
 #endif

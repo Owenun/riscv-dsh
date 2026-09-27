@@ -42,3 +42,34 @@ import sys
 d = bytearray(open(sys.argv[1], 'rb').read()); d[56:58] = (0).to_bytes(2, 'little')
 open(sys.argv[2], 'wb').write(d)
 PY
+python3 - "$E" build/bad_rgn64.elf <<'PY'                   # 修复轮 1（C-1）：恰好 64 个 PT_LOAD，期望 -4
+# 评审 C-1：main 装配恒追加 heap+stack 2 项，elf_load 必须预留 2 槽——
+# 恰好 64 段的合法 ELF 在旧检查（nload > MAX - n，n=0 时放行 64）下装载成功，
+# 随后 main 两次 mem_add_region 越过 rgn[63] 越界写（评审 ASan 实证 SEGV WRITE）。
+# 构造：以 t_hello.elf 为底，统计原 PT_LOAD 数，向程序头表尾部补零长 PT_LOAD
+# （vaddr=MEM_BASE、filesz=memsz=0，合法且能通过 elf.c 其余全部校验）至恰 64 段，
+# e_phnum 同步更新、文件按需补零；并自校验产物确为 64 段 PT_LOAD。
+import sys, struct
+src, dst = sys.argv[1], sys.argv[2]
+d = bytearray(open(src, 'rb').read())
+phoff = struct.unpack_from('<Q', d, 32)[0]
+phnum = struct.unpack_from('<H', d, 56)[0]
+tpl = bytearray(56)                                         # 合法零长 PT_LOAD
+tpl[0:4]   = (1).to_bytes(4, 'little')                      # p_type=PT_LOAD
+tpl[4:8]   = (5).to_bytes(4, 'little')                      # p_flags=R+X
+tpl[16:24] = (0x10000).to_bytes(8, 'little')                # p_vaddr=MEM_BASE
+nload = sum(1 for i in range(phnum)
+            if struct.unpack_from('<I', d, phoff + i * 56)[0] == 1)
+while nload < 64:                                           # 原程序头表尾部追加零长段
+    d[phoff + phnum * 56 : phoff + phnum * 56] = tpl
+    phnum += 1; nload += 1
+assert nload == 64 and phnum < 0x10000
+struct.pack_into('<H', d, 56, phnum)                        # e_phnum=补齐后的段数
+need = phoff + phnum * 56
+if len(d) < need: d.extend(b'\x00' * (need - len(d)))
+open(dst, 'wb').write(d)
+chk = 0
+for i in range(phnum):
+    if struct.unpack_from('<I', d, phoff + i * 56)[0] == 1: chk += 1
+assert chk == 64, chk
+PY

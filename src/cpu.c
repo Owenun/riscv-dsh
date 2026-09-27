@@ -1,12 +1,12 @@
-/* src/cpu.c —— RV64I 用户态模拟器：单步执行核心（Task 6/Task 8/Task 9）。
+/* src/cpu.c —— RV64I 用户态模拟器：单步执行核心（Task 6/Task 8/Task 9/Task 10
+   + Task 11 分发 B build_stack）。
    rv_step 流程：pc 4 对齐检查 → mem_read 4 字节取指 → rv_decode →
    switch 执行 → 写回（rd!=0）→ pc+=4 → steps++（跳转类臂自行更新 pc
    并提前返回，见下）。
    提交模型（spec §4.1）：一条指令要么完整生效，要么完全不生效并报故障——
    故障路径在任何写回/pc 推进/计数之前返回，无部分副作用。
-   现实现 49 条执行臂：立即数算术 9、寄存器算术 10、W 类 9（Task 6）、
-   访存 11（Task 8/M3）、控制流 10（Task 9/M4 分发 A）；系统组按任务
-   边界暂判非法指令（fault=RV_FV_ILLEGAL），由后续任务接入真实语义。
+   现实现 53 条执行臂全覆盖：立即数算术 9、寄存器算术 10、W 类 9（Task 6）、
+   访存 11（Task 8/M3）、控制流 10（Task 9/M4 分发 A）、系统 4（Task 10/M5）。
    移位量语义（spec §4.2 以 RISC-V 非特权级规范为准）：立即数移位 shamt 由
    decode 校验（SLLI/SRLI/SRAI 为 6 位且合法，W 类 5 位）；寄存器移位
    SLL/SRL/SRA 取 rs2 低 6 位、W 类取 rs2 低 5 位（设计文档 §4.2 写作 rs1
@@ -23,9 +23,20 @@
    JALR 目标 t=(rs1+imm)&~1 用旧 rs1 计算（rd==rs1 时先求 t 后写回）；
    分支仅在 taken 时检查目标对齐，未 taken 顺序推进 pc+4。跳转类臂
    （JAL/JALR/分支）的写回与 pc 更新由臂内自行完成并提前返回；LUI/AUIPC
-   语义上属控制流组但按普通路径退休（res 写回 + pc+=4，行为等价）。 */
+   语义上属控制流组但按普通路径退休（res 写回 + pc+=4，行为等价）。
+   系统组语义（Task 10/M5 分发 A，spec §4.2）：FENCE/FENCE.I 单 hart 顺序
+   一致 → 无副作用退休（普通提交路径 pc+=4、steps++；FENCE.I 的 imm 保留
+   字段校验在 decode）。ECALL 分发 rv_syscall（a7=x17 号码、a0..a5=x10..x15）：
+   kind=0 → val 写 a0 并正常退休；kind=1 → guest 终止（置 exited/exit_code，
+   不推进 pc/steps——指令未正常退休）；kind=2 → 不支持号码：置
+   exited/exit_code=205 并记录号码（sc_unsupported/unsupported_syscall_num），
+   诊断输出由 main/trace 层完成，cpu 不依赖 stdio。EBREAK = 停机诊断
+   （exited + exit_code=206，不推进 pc/steps）。
+   build_stack（Task 11/M5 分发 B，spec §3.4）：自 STACK_TOP 向下构造进程
+   初始栈（布局与顺序见函数头注释），sp 16 对齐写 x2，a0/a1/a2 保持 0。 */
 
 #include "rvsim.h"
+#include <string.h>
 
 /* 有符号 64 位比较（portable）：不依赖「无符号→有符号超界转换」的实现定义
    行为（与 decode.c 的规避原则一致）。符号位不同时高位者较小，相同时无符号
@@ -59,6 +70,22 @@ static uint64_t sra_w(uint64_t a, unsigned sh)
     return sra64(sext32((uint32_t)a), sh);
 }
 
+/* guest 视图小端序列化（与 cpu 取指/syscall 层的 mem 小端整块读写约定一致） */
+static void put_le64(uint8_t *p, uint64_t v)
+{
+    int i;
+    for (i = 0; i < 8; i++)
+        p[i] = (uint8_t)(v >> (8 * i));
+}
+
+/* 写一个 u64 到客户内存（小端）；失败返回 -1 供 build_stack 上抛 */
+static int wr64(rv_mem *m, uint64_t a, uint64_t v)
+{
+    uint8_t b[8];
+    put_le64(b, v);
+    return mem_write(m, a, b, 8);
+}
+
 void rvsim_reset(rvsim *s)
 {
     for (int i = 0; i < 32; i++)
@@ -68,6 +95,100 @@ void rvsim_reset(rvsim *s)
     s->fault = RV_FV_NONE;
     s->exited = false;
     s->exit_code = 0;
+    /* Task 10（M5）追加字段。brk_base/brk_cur 置 0 占位：正式值在 main 装配
+       （elf_load 返回 brk 基址后设置并登记 heap 区，分发 B 接线）。 */
+    s->brk_base = 0;
+    s->brk_cur = 0;
+    s->mmap_top = MMAP_BASE;
+    s->host_fd[0] = 0;
+    s->host_fd[1] = 1;
+    s->host_fd[2] = 2;
+    s->sc_unsupported = false;
+    s->unsupported_syscall_num = 0;
+}
+
+/* ---- 进程栈初始化（Task 11/M5 分发 B，spec §3.4 精确布局）----
+   自 STACK_TOP 向下排版，顺序钉死（高处→低处）：
+     AT_RANDOM 16 字节（固定 0x42*16，保证确定性）
+     argv 字符串区（argc 个字符串紧凑连接，各 NUL 结尾；gargs[0]=ELF 路径）
+     [16 对齐 padding：addr_str-blk .. sp 之间，guest 无指针指向此处]
+   sp 指向指针块低界：
+     sp+0   argc (u64)
+     sp+8   argv[0..argc-1] 指针 + NULL
+     ...    envp：单个 NULL（不传环境变量）
+     ...    auxv 3 对（顺序与 spec §3.4 文本一致、钉死）：
+              (AT_PAGESZ=6, 4096), (AT_RANDOM=25, 数据区地址), (AT_NULL=0, 0)
+   sp 16 对齐：STACK_TOP 页对齐 ⇒ 16 对齐 ⇒ AT_RANDOM/字符串区基址链路确定，
+   指针块尺寸为 8 的倍数，sp=(addr_str-blk)&~0xF 向下取整补 padding。
+   entry 契约（spec §3.4）：sp(x2)=sp；a0/a1/a2 保持 rvsim_reset 的 0
+   （mini-crt 自行从栈取参）；pc=entry 由 main 设置。 */
+int build_stack(rvsim *s, int argc, char **gargs)
+{
+    if (argc <= 0 || !gargs)
+        return -1;
+
+    /* 1. 尺寸合计（先算总尺寸再一次排版，不逐段探边） */
+    size_t strsz = 0;
+    for (int i = 0; i < argc; i++)
+        strsz += strlen(gargs[i]) + 1;
+    const size_t random_sz = 16;
+    const size_t blk = 8                          /* argc */
+                     + 8u * (size_t)(argc + 1)    /* argv[] + NULL */
+                     + 8                          /* envp 单 NULL */
+                     + 2u * 8u * 3u;              /* auxv 3 对（16B/对） */
+
+    /* 2. 排版（地址全部落在已登记 stack 区内：blk+strsz+16 << STACK_SIZE） */
+    uint64_t addr_random = STACK_TOP - random_sz;
+    uint64_t addr_str = addr_random - strsz;      /* 字符串区低界 */
+    uint64_t sp = (addr_str - blk) & ~(uint64_t)0xF;
+
+    /* 3. AT_RANDOM 数据：16 字节固定 0x42（spec §3.4 确定性要求） */
+    uint8_t rnd[16];
+    memset(rnd, 0x42, sizeof rnd);
+    if (mem_write(&s->mem, addr_random, rnd, random_sz) != 0)
+        return -1;
+
+    /* 4. argv 字符串区：紧凑连接写入 */
+    uint64_t p = addr_str;
+    for (int i = 0; i < argc; i++) {
+        size_t len = strlen(gargs[i]) + 1;
+        if (mem_write(&s->mem, p, gargs[i], len) != 0)
+            return -1;
+        p += len;
+    }
+
+    /* 5. 指针块：argc → argv[]+NULL → envp NULL → auxv（任一写失败即上抛） */
+    uint64_t q = sp;
+    if (wr64(&s->mem, q, (uint64_t)argc) != 0)    /* sp+0：argc */
+        return -1;
+    q += 8;
+    uint64_t off = 0;
+    for (int i = 0; i < argc; i++) {              /* argv[i] 指向字符串区 */
+        if (wr64(&s->mem, q, addr_str + off) != 0)
+            return -1;
+        q += 8;
+        off += strlen(gargs[i]) + 1;
+    }
+    if (wr64(&s->mem, q, 0) != 0)                 /* argv[argc] = NULL */
+        return -1;
+    q += 8;
+    if (wr64(&s->mem, q, 0) != 0)                 /* envp：单 NULL */
+        return -1;
+    q += 8;
+    /* auxv 顺序钉死（AT_PAGESZ → AT_RANDOM → AT_NULL），val 为构造区内
+       真实客户地址：AT_PAGESZ=页大小 4096；AT_RANDOM 指向 0x42 数据区。 */
+    if (wr64(&s->mem, q, 6) != 0 || wr64(&s->mem, q + 8, PAGE_SIZE) != 0)
+        return -1;
+    q += 16;
+    if (wr64(&s->mem, q, 25) != 0 || wr64(&s->mem, q + 8, addr_random) != 0)
+        return -1;
+    q += 16;
+    if (wr64(&s->mem, q, 0) != 0 || wr64(&s->mem, q + 8, 0) != 0)
+        return -1;
+
+    /* 6. entry 契约：sp 写 x2（a0/a1/a2 已由 rvsim_reset 清 0） */
+    s->cpu.x[2] = sp;
+    return 0;
 }
 
 int rv_step(rvsim *s)
@@ -94,8 +215,8 @@ int rv_step(rvsim *s)
         return s->fault;
     }
 
-    /* 4. 执行：49 条臂（Task 6 算术/移位 + Task 8 访存 + Task 9 控制流）；
-       default 覆盖未实现组（系统）。
+    /* 4. 执行：53 条臂全覆盖（Task 6 算术/移位 + Task 8 访存 + Task 9 控制流
+       + Task 10 系统）。
        ADD/SUB 及移位等按 2^64 回绕，由无符号算术自然实现；
        SLT/SLTU 结果恒 0/1；移位量越界风险由 decode（立即数）或掩码（寄存器）排除。 */
     uint64_t a = s->cpu.x[d.rs1];
@@ -256,16 +377,51 @@ int rv_step(rvsim *s)
         s->cpu.steps++;
         return s->fault;
     }
-    /* ---- 未实现组（系统：FENCE/FENCE.I/ECALL/EBREAK，后续任务接入）：
-       此刻按非法指令处理，无副作用 ---- */
-    default:
+    /* ---- 系统（Task 10/M5 分发 A，spec §4.2）----
+       FENCE/FENCE.I：单 hart 顺序一致，无副作用 → 落到底部普通提交路径
+       （pc+=4、steps++；FENCE.I 的 imm 保留字段由 decode 判非法）。
+       ECALL：分发 rv_syscall（a7=x17，a0..a5=x10..x15）。kind=0 → val 直接写
+       a0=x10（ECALL 编码 rd 恒 0，decode 强制，通用写回路径不适用）后经底部
+       普通退休（pc+=4、steps++）；kind=1/2 → guest 终止（exited + 退出码；
+       kind=2 恒 205 并记录号码供 main/trace 诊断），提前返回不推进 pc/steps。
+       EBREAK：停机诊断 → exited + 206，提前返回不推进。 */
+    case RV_FENCE:
+    case RV_FENCEI:
+        break;
+    case RV_ECALL: {
+        rv_sc_ret r = rv_syscall(s, s->cpu.x[17], s->cpu.x[10], s->cpu.x[11],
+                                 s->cpu.x[12], s->cpu.x[13], s->cpu.x[14],
+                                 s->cpu.x[15]);
+        if (r.kind == 1) {
+            s->exited = true;
+            s->exit_code = (int)r.val;
+            return s->fault;                   /* guest 终止：不推进 pc/steps */
+        }
+        if (r.kind == 2) {
+            s->exited = true;
+            s->exit_code = RVSIM_EX_SYSCALL;
+            s->sc_unsupported = true;
+            s->unsupported_syscall_num = (int)s->cpu.x[17];
+            return s->fault;                   /* 不支持：同上，诊断由 main/trace 打印 */
+        }
+        /* kind=0：返回值写 a0（x10）。ECALL 编码 rd 恒 0（decode 强制），
+           不能借通用提交路径写回，须显式写 a0；pc/steps 仍走底部普通退休。 */
+        s->cpu.x[10] = (uint64_t)r.val;
+        break;
+    }
+    case RV_EBREAK:
+        s->exited = true;
+        s->exit_code = RVSIM_EX_EBREAK;
+        return s->fault;                       /* 不推进 pc、不计数 */
+    default:                                   /* RV_OP_COUNT 及越界枚举：不可达防御 */
         s->fault = RV_FV_ILLEGAL;
         return s->fault;
     }
 
     /* 5. 提交：写回（x0 恒 0，写入丢弃）→ pc 推进 → 计数。仅非跳转臂走到
-       此处（ALU/访存 + 控制流组的 LUI/AUIPC）：按 pc+4 退休；JAL/JALR/
-       分支已在臂内更新 pc 并提前返回。 */
+       此处（ALU/访存 + 控制流组的 LUI/AUIPC + 系统组的 FENCE/FENCE.I 与
+       返回值型 ECALL）：按 pc+4 退休；JAL/JALR/分支已在臂内更新 pc 并提前
+       返回；终止型 ECALL/EBREAK 已置 exited 并提前返回。 */
     if (write_rd && d.rd != 0)
         s->cpu.x[d.rd] = res;
     s->cpu.pc += 4;

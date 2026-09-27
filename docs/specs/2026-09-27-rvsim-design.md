@@ -156,7 +156,7 @@ while (steps < max_steps) {
 | 160 | uname | `uname(struct utsname *buf)` | 写 390 字节（6×65）：`Linux / rvsim / 6.8.0-rvsim / #1 rvsim / riscv64 / (none)` | — |
 
 - 表中未列的任何号码：写 stderr 诊断 `rvsim: unsupported syscall N pc=0x…`，终止，退出码 205。
-- buf/指针参数指向未映射地址 → 202（与访存一致）。
+- buf/指针参数指向未映射地址 → 返回 -EFAULT(14)（Linux 语义）；202 保留给 CPU 访存级故障。
 - mini-crt（§8）只依赖 93/94/64/63/214/222/160 中的子集，逐条会有测试。
 
 ## 6. CLI、可观测性与调试器
@@ -197,7 +197,7 @@ rvsim [OPTIONS] ELF [GUEST_ARGS...]
 | 0..255 | guest `exit(code)` 透传（guest 若故意 exit(200+) 会与下表撞号，属已知歧义，靠 stderr 诊断行区分） | — |
 | 200 | 用法错误（参数不合法、文件打不开） | `rvsim: usage ...` |
 | 201 | ELF 加载失败（魔数/类别/机器/截断/无 PT_LOAD/PT_INTERP/entry 越界） | `rvsim: elf-load ...` |
-| 202 | 未映射访问（含取指、syscall 指针参数） | `rvsim: fault unmapped pc=0x… addr=0x…` |
+| 202 | 未映射访问（含取指；syscall 指针参数不属此类，按 §5 返回 -EFAULT） | `rvsim: fault unmapped pc=0x… addr=0x…` |
 | 203 | 未对齐访存/取指/跳转目标 | `rvsim: fault misaligned pc=0x… addr=0x… align=N` |
 | 204 | 非法/保留指令 | `rvsim: illegal insn pc=0x… word=0x…` |
 | 205 | 不支持的 syscall | `rvsim: unsupported syscall N pc=0x…` |
