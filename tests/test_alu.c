@@ -5,7 +5,9 @@
    非特权级规范；设计文档 §4.2 写作 rs1 系笔误，见 task-6-report）。
    简报骨架中 SLTI/SLTIU/SLT/SLTU 四处期望值与手算相反，已修正留档。
    Task 8（M3）适配：访存组执行臂接入后，故障契约探针由 LD 换为仍属
-   未实现组的 JAL（断言意图不变：可解码但无执行臂 → ILLEGAL 且零副作用）。 */
+   未实现组的 JAL。M4 分发 A（Task 9）适配：控制流组接入后 JAL 探针失效，
+   按 M3 修复轮预告改用 FENCE（0x0000000F，系统组仍无执行臂）作
+   「可解码但无执行臂 → ILLEGAL 且零副作用」探针，断言意图不变。 */
 #include "harness.h"
 #include "enc.h"
 
@@ -90,13 +92,11 @@ int main(void)
 
         reset_sim();
         {
-            uint32_t jal = 0x0000006Fu;              /* JAL x0,0：可解码但控制流组无执行臂
-                                                        （访存组已由 Task 8 接入，探针换 JAL）。
-                                                        预告（M3 修复轮）：M4 控制流组接入后
-                                                        JAL 将有执行臂，本探针随之失效；届时
-                                                        改用 FENCE/ECALL 组编码作「可解码但
-                                                        无执行臂 → ILLEGAL」探针。 */
-            CHECK(mem_write(&hs.mem, MEM_BASE, &jal, 4) == 0);
+            uint32_t fence = 0x0000000Fu;            /* FENCE：可解码但系统组无执行臂
+                                                        （M4 分发 A：控制流组已接入，
+                                                        按 M3 预告由 JAL 换为 FENCE——
+                                                        可解码、仍无执行臂 → ILLEGAL）。 */
+            CHECK(mem_write(&hs.mem, MEM_BASE, &fence, 4) == 0);
         }
         hs.cpu.x[12] = 0xDEADBEEFCAFEBABEULL;        /* 确认无写回副作用 */
         r = rv_step(&hs);

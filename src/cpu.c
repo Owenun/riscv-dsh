@@ -1,11 +1,12 @@
-/* src/cpu.c —— RV64I 用户态模拟器：单步执行核心（Task 6/Task 8）。
+/* src/cpu.c —— RV64I 用户态模拟器：单步执行核心（Task 6/Task 8/Task 9）。
    rv_step 流程：pc 4 对齐检查 → mem_read 4 字节取指 → rv_decode →
-   switch 执行 → 写回（rd!=0）→ pc+=4 → steps++。
+   switch 执行 → 写回（rd!=0）→ pc+=4 → steps++（跳转类臂自行更新 pc
+   并提前返回，见下）。
    提交模型（spec §4.1）：一条指令要么完整生效，要么完全不生效并报故障——
    故障路径在任何写回/pc 推进/计数之前返回，无部分副作用。
-   现实现 39 条执行臂：立即数算术 9、寄存器算术 10、W 类 9（Task 6）、
-   访存 11（Task 8/M3）；其余组（控制流/系统）按任务边界暂判非法指令
-   （fault=RV_FV_ILLEGAL），由后续任务接入真实语义。
+   现实现 49 条执行臂：立即数算术 9、寄存器算术 10、W 类 9（Task 6）、
+   访存 11（Task 8/M3）、控制流 10（Task 9/M4 分发 A）；系统组按任务
+   边界暂判非法指令（fault=RV_FV_ILLEGAL），由后续任务接入真实语义。
    移位量语义（spec §4.2 以 RISC-V 非特权级规范为准）：立即数移位 shamt 由
    decode 校验（SLLI/SRLI/SRAI 为 6 位且合法，W 类 5 位）；寄存器移位
    SLL/SRL/SRA 取 rs2 低 6 位、W 类取 rs2 低 5 位（设计文档 §4.2 写作 rs1
@@ -14,7 +15,15 @@
    （LH/LHU/SH 2、LW/LWU/SW 4、LD/SD 8，LB/LBU/SB 无要求）再
    mem_read/mem_write（未映射→UNMAPPED）；加载按宽度截断后符号/零扩展写回；
    store 只写低 w 字节且无 rd 写回。mem 以客户小端视图整块读写（与取指
-   memcpy 的既有约定一致）。 */
+   memcpy 的既有约定一致）。
+   控制流语义（Task 9/M4 分发 A，spec §4.2/§3.3）：LUI 的 U 型 imm 已由
+   decode 符号扩展 32→64；AUIPC = pc + imm（按 2^64 回绕）。JAL/JALR/
+   分支目标须 4 对齐（JALR 先清 bit0 再判），不对齐 → RV_FV_MISALIGNED
+   且零副作用（rd 不写、pc 不变、steps 不增）——对齐检查先于任何写回。
+   JALR 目标 t=(rs1+imm)&~1 用旧 rs1 计算（rd==rs1 时先求 t 后写回）；
+   分支仅在 taken 时检查目标对齐，未 taken 顺序推进 pc+4。跳转类臂
+   （JAL/JALR/分支）的写回与 pc 更新由臂内自行完成并提前返回；LUI/AUIPC
+   语义上属控制流组但按普通路径退休（res 写回 + pc+=4，行为等价）。 */
 
 #include "rvsim.h"
 
@@ -85,8 +94,8 @@ int rv_step(rvsim *s)
         return s->fault;
     }
 
-    /* 4. 执行：39 条臂（Task 6 算术/移位 + Task 8 访存）；default 覆盖未实现
-       组（控制流/系统）。
+    /* 4. 执行：49 条臂（Task 6 算术/移位 + Task 8 访存 + Task 9 控制流）；
+       default 覆盖未实现组（系统）。
        ADD/SUB 及移位等按 2^64 回绕，由无符号算术自然实现；
        SLT/SLTU 结果恒 0/1；移位量越界风险由 decode（立即数）或掩码（寄存器）排除。 */
     uint64_t a = s->cpu.x[d.rs1];
@@ -183,14 +192,80 @@ int rv_step(rvsim *s)
         write_rd = false;
         break;
     }
-    /* ---- 未实现组（控制流/系统，后续任务接入）：此刻按非法指令处理，无副作用 ---- */
+    /* ---- 控制流（Task 9/M4 分发 A）----
+       LUI/AUIPC 按普通路径退休（res 写回 + pc+=4）。JAL/JALR/分支的写回
+       与 pc 更新由臂内自行完成并提前返回；目标对齐检查先于任何写回/pc
+       更新（故障零副作用契约，spec §4.1/§3.3）。JALR 目标先清 bit0 再判
+       4 对齐，且用旧 rs1 计算（rd==rs1 时先求 t 后写回 pc+4）；分支仅在
+       taken 时目标才需对齐（未 taken 顺序推进 pc+4，无目标概念）。 */
+    case RV_LUI:   res = (uint64_t)d.imm; break;               /* U 型 imm 已符号扩展 32→64 */
+    case RV_AUIPC: res = s->cpu.pc + (uint64_t)d.imm; break;   /* pc 相对，按 2^64 回绕 */
+    case RV_JAL: {
+        uint64_t target = s->cpu.pc + (uint64_t)d.imm;
+        if (target & 3u) {
+            s->fault = RV_FV_MISALIGNED;                       /* 先检查：rd 不写、pc 不变 */
+            return s->fault;
+        }
+        if (d.rd != 0)
+            s->cpu.x[d.rd] = s->cpu.pc + 4;
+        s->cpu.pc = target;
+        s->cpu.steps++;
+        return s->fault;
+    }
+    case RV_JALR: {
+        uint64_t target = (a + (uint64_t)d.imm) & ~(uint64_t)1; /* 清 bit0；a 为旧 rs1 */
+        if (target & 3u) {
+            s->fault = RV_FV_MISALIGNED;
+            return s->fault;
+        }
+        if (d.rd != 0)
+            s->cpu.x[d.rd] = s->cpu.pc + 4;
+        s->cpu.pc = target;
+        s->cpu.steps++;
+        return s->fault;
+    }
+    case RV_BEQ:
+    case RV_BNE:
+    case RV_BLT:
+    case RV_BGE:
+    case RV_BLTU:
+    case RV_BGEU: {
+        bool taken;
+        if (d.op == RV_BEQ)
+            taken = (a == b);
+        else if (d.op == RV_BNE)
+            taken = (a != b);
+        else if (d.op == RV_BLT)
+            taken = slt64(a, b) != 0;                          /* 有符号 */
+        else if (d.op == RV_BGE)
+            taken = slt64(a, b) == 0;
+        else if (d.op == RV_BLTU)
+            taken = (a < b);                                   /* 无符号 */
+        else
+            taken = !(a < b);                                  /* RV_BGEU */
+        if (taken) {
+            uint64_t target = s->cpu.pc + (uint64_t)d.imm;
+            if (target & 3u) {
+                s->fault = RV_FV_MISALIGNED;                   /* 分支本无写回，pc 亦未动 */
+                return s->fault;
+            }
+            s->cpu.pc = target;
+        } else {
+            s->cpu.pc += 4;
+        }
+        s->cpu.steps++;
+        return s->fault;
+    }
+    /* ---- 未实现组（系统：FENCE/FENCE.I/ECALL/EBREAK，后续任务接入）：
+       此刻按非法指令处理，无副作用 ---- */
     default:
         s->fault = RV_FV_ILLEGAL;
         return s->fault;
     }
 
-    /* 5. 提交：写回（x0 恒 0，写入丢弃；store 无写回）→ pc 推进 → 计数
-       （控制流臂接入后由执行更新 pc，此处 +4 是非控制流臂的退休推进）。 */
+    /* 5. 提交：写回（x0 恒 0，写入丢弃）→ pc 推进 → 计数。仅非跳转臂走到
+       此处（ALU/访存 + 控制流组的 LUI/AUIPC）：按 pc+4 退休；JAL/JALR/
+       分支已在臂内更新 pc 并提前返回。 */
     if (write_rd && d.rd != 0)
         s->cpu.x[d.rd] = res;
     s->cpu.pc += 4;
