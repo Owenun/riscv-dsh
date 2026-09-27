@@ -1,0 +1,26 @@
+#ifndef RVSIM_H
+#define RVSIM_H
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#define MEM_BASE    0x0000000000010000ULL
+#define MEM_SIZE    0x0000000020000000ULL   /* 512 MiB */
+#define MMAP_BASE   0x0000000010000000ULL
+#define MMAP_CAP    0x0000000004000000ULL   /* 64 MiB */
+#define HEAP_CAP    0x0000000002000000ULL   /* 32 MiB */
+#define STACK_SIZE  0x0000000000800000ULL   /* 8 MiB */
+#define STACK_TOP   0x000000002000F000ULL
+#define PAGE_SIZE   4096ULL
+#define ET_DYN_BIAS 0x0000000000100000ULL
+
+#define RVSIM_EX_USAGE     200
+#define RVSIM_EX_ELF       201
+#define RVSIM_EX_UNMAPPED  202
+#define RVSIM_EX_MISALIGNED 203
+#define RVSIM_EX_ILLEGAL   204
+#define RVSIM_EX_SYSCALL   205
+#define RVSIM_EX_EBREAK    206
+#define RVSIM_EX_STEPLIMIT 207
+#define RVSIM_EX_HOSTERR   208
+#endif

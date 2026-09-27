@@ -3,3 +3,5 @@
 rvsim
 tests/run/*.out
 /tmp/
+build/
+tests/guest-bin/
