@@ -67,7 +67,7 @@ rvsim [opts] ELF [guest-args...]
 ## 3. 内存模型与进程初始化
 
 ### 3.1 地址空间（平坦窗口）
-- `MEM_BASE = 0x0000000000010000`，`MEM_SIZE = 256 MiB`（固定，不做配置项），有效区间 `[MEM_BASE, MEM_BASE+MEM_SIZE)`。
+- `MEM_BASE = 0x0000000000010000`，`MEM_SIZE = 512 MiB`（固定，不做配置项），有效区间 `[MEM_BASE, MEM_BASE+MEM_SIZE)`。
 - 该区间外任何访问（含取指）→ 未映射故障（退出码 202）。
 - 区间内部按四个登记区管理：**ELF 段区、brk 堆区、mmap 区、栈区**；登记区之外但窗口之内同样判 202（不许野访问）。
 
@@ -78,6 +78,15 @@ rvsim [opts] ELF [guest-args...]
 | heap（brk） | `brk_base` = 最高 PT_LOAD 段末尾向上页对齐 | 增长不超过 32 MiB |
 | mmap | `MMAP_BASE = 0x10000000` 起向上 bump 分配 | 总量 64 MiB |
 | stack | 预映射固定 8 MiB，栈顶 `STACK_TOP = MEM_BASE+MEM_SIZE - 4096`（顶端留 1 页 guard） | 固定 8 MiB，越界 202 |
+
+数值布局（512MiB 窗口，四区互不重叠，写入规格即为验收依据）：
+
+```
+窗口      [0x00010000, 0x20010000)
+ELF/heap  0x00100000 起（ET_DYN 基址），heap 上限 0x02110000
+mmap      [0x10000000, 0x14000000)
+stack     [0x1F80F000, 0x2000F000)，STACK_TOP = 0x2000F000
+```
 
 ### 3.3 对齐规则（RV64I 无 C 扩展）
 - 取指：PC 必须 4 对齐且已映射，否则 203/202。
