@@ -213,10 +213,13 @@ int main(int argc, char **argv)
        main 与调试器共享实现（trace.c，Task 13 分发 B） */
     rv_diag_stderr(&s, code, opt.max_steps, opt.verbose);
 
-    /* -v：退出原因（spec §6.1） */
+    /* -v：退出原因（spec §6.1）+ 退休指令数（cpu.steps 只在指令正常退休时
+       递增，见 cpu.c——EBREAK/故障/205 路径不计入，与 trace 行数同口径） */
     if (opt.verbose >= 1)
-        fprintf(stderr, "rvsim: exit reason=%s code=%d pc=0x%016llx\n",
-                rv_exit_reason(&s, code), code, (unsigned long long)s.cpu.pc);
+        fprintf(stderr,
+                "rvsim: exit reason=%s code=%d pc=0x%016llx steps=%llu\n",
+                rv_exit_reason(&s, code), code, (unsigned long long)s.cpu.pc,
+                (unsigned long long)s.cpu.steps);
 
     /* 停机 dump（spec §6.1：向 stdout；--dump-mem 读未映射 → 208，申报） */
     if (opt.dump_regs)

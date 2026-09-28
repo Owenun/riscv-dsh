@@ -8,8 +8,10 @@
    两侧语义一致，可差分）。
    golden（tests/golden/t_argv.out，手算固定）：PASS t_argv n=3 a1=one a2=two
    任何不符 → FAIL 行 + 退出码 1。 */
-static unsigned long xstrlen(const char *s) { unsigned long n = 0; while (s[n]) n++; return n; }
-static void gput_str(const char *s) { gwrite(1, s, xstrlen(s)); }
+/* bench-A: 局部助手改名 tv_strlen——guest.h 新增 mini-crt 全局 xstrlen 原型，
+ * 与本文件原有 static 同名定义链接性冲突（static 跟随非 static 声明），行为不变 */
+static unsigned long tv_strlen(const char *s) { unsigned long n = 0; while (s[n]) n++; return n; }
+static void gput_str(const char *s) { gwrite(1, s, tv_strlen(s)); }
 static void gput_dec(unsigned long v) {
     char b[20]; int i = 20;
     do { b[--i] = (char)('0' + v % 10); v /= 10; } while (v);

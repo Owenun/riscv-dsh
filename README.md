@@ -18,7 +18,7 @@ RVSim 是一个用 C99 实现的 RV64I（+Zifencei）用户态指令集模拟器
 make && make test
 ```
 
-`make test` 全绿是每个里程碑 commit 的前置条件。当前矩阵：**1503 行 PASS**（90 个分层用例组 + 1413 条框架级断言），无 FAIL，退出码 0。若只编译而不跑测试：`make`；只构建 guest ELF：`make guest`（产出 `tests/guest-bin/*.elf`，`make test` 也会自动构建）。
+`make test` 全绿是每个里程碑 commit 的前置条件。当前矩阵：**1503 行 PASS**（90 个分层用例组 + 1413 条框架级断言），无 FAIL，退出码 0。若只编译而不跑测试：`make`；只构建 guest ELF：`make guest`（产出 `tests/guest-bin/*.elf`，`make test` 也会自动构建）；构建并运行 4 个基准的性能评估：`make bench`（不并入 `make test`，方法与数据见 [docs/benchmarks.md](docs/benchmarks.md)）。
 
 ## 运行示例
 
@@ -35,11 +35,11 @@ PASS t_hello
 
 ```
 $ build/rvsim -v tests/guest-bin/t_hello.elf
-rvsim: load seg lo=0x0000000000010000 hi=0x000000000001023c
+rvsim: load seg lo=0x0000000000010000 hi=0x000000000001030c
 PASS t_hello
-rvsim: syscall 64 write(1, 65992, 13, 0, 0, 0) = 13
-rvsim: syscall 93 exit(0, 65992, 13, 0, 0, 0)
-rvsim: exit reason=guest-exit code=0 pc=0x0000000000010128
+rvsim: syscall 64 write(1, 66136, 13, 0, 0, 0) = 13
+rvsim: syscall 93 exit(0, 66136, 13, 0, 0, 0)
+rvsim: exit reason=guest-exit code=0 pc=0x0000000000010128 steps=77
 ```
 
 `--trace -` 逐指令 trace（每退休一条指令一行；`FILE` 也可写普通文件，摘录）：
@@ -126,7 +126,7 @@ rvsim> q
 
 - [docs/specs/2026-09-27-rvsim-design.md](docs/specs/2026-09-27-rvsim-design.md) — 设计规格 v1.0（指令语义 §4、syscall §5、CLI §6、退出码 §7、测试 §8）
 - [TOOLCHAIN.md](TOOLCHAIN.md) — 交叉工具链路径、版本与验证命令
-- [docs/benchmarks.md](docs/benchmarks.md) — smoke 性能数据备案（非验收指标）
+- [docs/benchmarks.md](docs/benchmarks.md) — 基准套件（Dhrystone/N-Queens/SHA-256/Heapsort）与性能评估，附 smoke 数据备案（非验收指标）
 - 实施计划（任务 1–15、里程碑 M0–M7）：`.superpowers/sdd/2026-09-27-rvsim-implementation/`
 
 ## 限制（非目标，摘自规格 §1.2）
