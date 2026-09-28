@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #define MEM_BASE    0x0000000000010000ULL
 #define MEM_SIZE    0x0000000020000000ULL   /* 512 MiB */
@@ -23,6 +24,8 @@
 #define RVSIM_EX_EBREAK    206
 #define RVSIM_EX_STEPLIMIT 207
 #define RVSIM_EX_HOSTERR   208
+
+#define RVSIM_DEFAULT_MAX_STEPS 100000000ULL   /* --max-steps 默认值（spec §6.1） */
 
 /* ---- mem 模块 ---- */
 typedef struct { uint64_t lo, hi; int kind; } rv_region;   /* [lo,hi)，kind: 0=ELF 1=heap 2=mmap 3=stack */
@@ -80,10 +83,25 @@ typedef struct {
     int host_fd[3];             /* guest fd 0/1/2 → 宿主 fd，默认 {0,1,2} */
     bool sc_unsupported;        /* ECALL 命中不支持号码（exit_code=205）时置位 */
     int unsupported_syscall_num;/* 上述号码，供 main/trace 打印诊断（cpu 不依赖 stdio） */
+    /* ---- 以下为 Task 12 分发 A（M6-a）尾部追加字段（不得插入/重排上方成员）----
+       last_dec/has_dec/last_pc：rv_step 解码成功即填（last_pc=本步起始 pc、
+       last_dec=本步解码结果）；仅当 rv_step 返回 0（指令正常退休）时 trace 层
+       消费——终止型 ECALL/EBREAK 与各故障路径不退休，main 不调 trace_step。
+       fault_addr/fault_insn/fault_align：各故障点填充（M6-a 接口裁决字段）；
+       取指 pc 未对齐/未映射取指 fault_insn=0（指令字未知）；fault_align 仅
+       MISALIGNED 有效：4=取指/跳转目标，2/4/8=访存宽度。
+       has_syscall/sc_kind/sc_num/sc_args/sc_ret：ECALL 分发快照（kind 语义同
+       rv_sc_ret），-v 里程碑日志（syscall 名/参/返回、brk/mmap/munmap 变化）
+       由 main 读取——cpu/syscall 层不依赖 stdio（接口裁决四字段之外，为本
+       需求尾部追加，报告已申报）。 */
+    rv_dec last_dec; bool has_dec; uint64_t last_pc;
+    uint64_t fault_addr; uint32_t fault_insn; uint32_t fault_align;
+    bool has_syscall; int sc_kind;
+    uint64_t sc_num; uint64_t sc_args[6]; int64_t sc_ret;
 } rvsim;
 /* 结构体布局说明：本任务按接口契约定稿（mem/cpu/fault/exited/exit_code）；
-   后续任务（Task 10 等）只允许在结构体尾部追加字段，不得插入或重排现有成员。 */
-void rvsim_reset(rvsim *s);    /* 清零 cpu/fault/exited；mem 由调用方 init */
+   后续任务只允许在结构体尾部追加字段，不得插入或重排现有成员。 */
+void rvsim_reset(rvsim *s);    /* 清零 cpu/fault/exited/M6-a 尾部字段；mem 由调用方 init */
 int  rv_step(rvsim *s);        /* 取指+解码+执行一条；返回 s->fault（0=成功退休）。
                                 故障路径无部分副作用：不写回、不推进 pc、不计数。 */
 
@@ -103,4 +121,62 @@ int build_stack(rvsim *s, int argc, char **gargs);
 typedef struct { int kind; int64_t val; } rv_sc_ret;
 rv_sc_ret rv_syscall(rvsim *s, uint64_t num, uint64_t a0, uint64_t a1,
                      uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5);
+
+/* ---- CLI（Task 12 分发 A，spec §6.1）----
+   rvsim [OPTIONS] ELF [GUEST_ARGS...]：ELF 路径 = 第一个非选项参数，其后全部
+   为 guest-args（即使形如 -v）；-v=1/-vv=2 里程碑日志；--trace FILE（"-"=
+   stdout）；--dump-regs；--dump-mem A:L；--max-steps N（默认 1e8，超限 207）；
+   -s 调试器；-h 用法说明 → exit 0。未知选项/缺参/坏值 → usage 200（诊断已
+   打印到 stderr）。 */
+typedef struct {
+    bool help;                  /* -h：main 打印 usage(stdout) 后退出 0 */
+    int verbose;                /* 0 无；1=-v；2=-vv */
+    const char *trace_path;     /* NULL=关闭；"-"=stdout */
+    bool dump_regs;
+    bool dump_mem; uint64_t dm_addr, dm_len;   /* --dump-mem A:L */
+    uint64_t max_steps;         /* 默认 RVSIM_DEFAULT_MAX_STEPS */
+    bool dbg;                   /* -s */
+    const char *elf;            /* ELF 路径（第一个非选项参数） */
+    char **gargs; int gargc;    /* guest-args（gargs[0]=ELF 路径，spec §3.4） */
+} rv_cli;
+int  cli_parse(int argc, char **argv, rv_cli *o);  /* 0=ok；非 0=退出码 200（已打印诊断） */
+void cli_print_usage(FILE *out);
+
+/* ---- 可观测性（Task 12 分发 A，spec §6.1/§7）---- */
+typedef struct { FILE *f; uint64_t seq; int err; bool own; } rv_trace;
+/* trace 行：`T <seq> pc=0x<16hex> insn=0x<8hex> <助记名>[ rd=xN=0x<16hex>]`，
+   seq 自 1 起，每条成功退休的指令一行；助记名 = rv_op 枚举名；rd 字段仅
+   写回型指令且 rd!=0 打印（值为退休后 x[rd]，即本步写回值）。 */
+void trace_attach(rv_trace *t, FILE *f);        /* 测试/宿主流注入 */
+int  trace_open(rv_trace *t, const char *path); /* 0=ok；-1=打开失败（main→208） */
+void trace_step(rv_trace *t, const rvsim *s);   /* rv_step 返回 0 后调用一次；
+                                终止型 ECALL/EBREAK 步（exited=true）不产行，
+                                行数恒等于退休步数（s.cpu.steps） */
+int  trace_close(rv_trace *t);                  /* 0=ok；-1=写/关失败（main→208） */
+const char *rv_op_mnem(rv_op op);               /* rv_op 枚举名；越界 → "RV_?" */
+const char *rv_sc_mnem(uint64_t num);           /* -v 用的 syscall 名（子集） */
+/* --dump-regs：x0..x31 + pc 共 33 行，`xN  = 0x<16hex>`（名字列 5 字符宽）。
+   --dump-mem：每行 16 字节 = `地址  8字节hex  8字节hex  |ASCII|`（组内 2 位
+   十六进制连续、组间/尾前两空格；截断行空位补空格；ASCII 不可打印 → '.'）。
+   读失败（未映射）→ 停止并返回 -1（main→208），已写行保留。 */
+void rv_dump_regs(FILE *out, const rv_cpu *c);
+int  rv_dump_mem(FILE *out, rv_mem *m, uint64_t addr, uint64_t len);
+
+/* 终止原因名与 §7 stderr 诊断（Task 13 分发 B：main -v 行与调试器 stopped
+   行共享）：rv_exit_reason ∈ {guest-exit, ebreak, unsupported-syscall,
+   fault-unmapped, fault-misaligned, fault-illegal, step-limit, stop}；
+   rv_diag_stderr 按状态打印恰一条诊断（205/206/202/203/204/207；guest
+   正常 exit 不打；202..204 后 -vv 追加全部 GPR 现场）。 */
+const char *rv_exit_reason(const rvsim *s, int code);
+void rv_diag_stderr(const rvsim *s, int code, uint64_t max_steps, int verbose);
+
+/* 调试器（-s，spec §6.2，Task 13 分发 B 完整版）：装载后停在 entry 前，
+   提示符 rvsim> 逐行读 stdin，命令 s [N]/c/r/m A L/b A/d A/q/h（§6.2 表）。
+   断点最多 8 个（重复/超限报错）；断点命中（pc==A）打印当前指令挂起回
+   提示符，再次 c 单步跨过命中点继续；guest exit/EBREAK/205/故障/207 在
+   s/c 中发生 → §7 诊断（stderr）+ 终止原因行（stdout）后回提示符；
+   stdin EOF → 视为 q。调试器接管全部执行（-s 下 main 主循环不运行）。
+   返回 1 = 会话结束（q/EOF），*out_code = 退出码（未终止 0；已终止=
+   guest 退出码/205/206/202..204/207）。 */
+int debugger_run(rvsim *s, uint64_t max_steps, int verbose, int *out_code);
 #endif

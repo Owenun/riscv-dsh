@@ -19,6 +19,8 @@ run_l0 test_flow tests/test_flow.c src/mem.c src/decode.c src/cpu.c src/syscall.
 run_l0 test_syscall tests/test_syscall.c src/mem.c src/decode.c src/cpu.c src/syscall.c
 # build_stack 栈布局 L0（Task 11/M5 分发 B）：期望值全部手算（见用例头注释）
 run_l0 test_stack tests/test_stack.c src/mem.c src/decode.c src/cpu.c src/syscall.c
+# L0 可观测性（Task 12 分发 A）：trace 行/dump 格式/fault 现场尾部字段直测
+run_l0 test_trace tests/test_trace.c src/mem.c src/decode.c src/cpu.c src/syscall.c src/trace.c
 
 # L1 mini-crt：构建级验证（编译出纯 RV64I 静态 ELF）
 CROSS_PREFIX=${CROSS_PREFIX:-/home/xzc/projects/mini-qemu/work/output/host/bin/riscv64-buildroot-linux-musl-}
@@ -89,6 +91,11 @@ smoke_rc() { # smoke_rc <desc> <want_rc> <cmd...>
 smoke_rc usage-file-open-200 200 build/rvsim /tmp/rvsim-no-such-file.$$
 smoke_rc bad-elf-201 201 build/rvsim build/bad_magic.elf
 smoke_rc rgn64-cap-201 201 build/rvsim build/bad_rgn64.elf
+# 修复轮 1（重要 4）：CLI 负数拒绝——选项值前导 '-' → usage 200（与调试器
+# parse_u64 口径一致）。旧代码 strtoull 吞负号：--max-steps -1 曾被接受为
+# ULLONG_MAX（rc=0 跑通全程）、--dump-mem -1:32 曾被接受后在 dump 期炸 208。
+smoke_rc usage-neg-max-steps-200 200 build/rvsim --max-steps -1 tests/guest-bin/t_bubble.elf
+smoke_rc usage-neg-dumpmem-200 200 build/rvsim --dump-mem -1:32 tests/guest-bin/t_bubble.elf
 
 # L1-native：guest 程序宿主双编译差分（R21 裁决；独立于 RVSIM_CAN_RUN 的固定段）。
 # 同一份 C 语义宿主原生编译执行：stdout 须等于 golden、退出码 0。
@@ -151,5 +158,83 @@ if [ "$RVSIM_L2" = 1 ]; then
         run_l2 "$n" $(extra_args "$n")
     done
 fi
+
+# L3 快照探针 ELF（修复轮 1/重要 5）：fault_ld.elf（202 故障路径）与
+# brk_probe.elf（-v brk 日志）现场生成（build/ 已 gitignore，不进版本库），
+# 构造与逐条指令编码注释见 tests/make_snap_elfs.sh。
+bash tests/make_snap_elfs.sh || { echo "make_snap_elfs FAIL"; FAIL=1; }
+
+# L3 CLI 快照（Task 12 分发 A，spec §6.1）：退出码断言 + golden 快照 diff。
+# 修复轮 1（重要 5）：golden/<name>.out 存在才 diff stdout、<name>.err 存在
+# 才 diff stderr（err golden 缺省不锁，向后兼容既有 4 个快照）——此前
+# stderr 完全不锁，故障/步限诊断行无回归保护。
+# golden 逐字手核记录见 sdd/task-12-report.md 与 sdd/task-13-report.md
+# 「修复轮 1」：snap_trace 修复轮 1（重要 2）重构——golden 原锁的是 stdio
+# 交错损坏态（第 120 行劈开行），现按正确交错语义手核（行数=143 退休步
+# +1 guest 输出行、seq 1..143 连续、write 输出先于本步 trace 行）；snap_regs
+# 逐寄存器按反汇编人工推演；snap_mem 首行字节对 objdump 机器码；
+# snap_limit stderr 行 pc=第 11 条指令 pc（第 10 条 SD 退休后，对 trace 文件）；
+# snap_fault/snap_brk 为手工编码探针 ELF（tests/make_snap_elfs.sh）锁定。
+snap() { # snap <golden> <want_rc> <cmd...>
+    local g=$1 want=$2; shift 2
+    "$@" > build/snap.out 2> build/snap.err
+    local rc=$? ok=1
+    [ "$rc" -eq "$want" ] || ok=0
+    if [ -f "tests/golden/$g.out" ] && ! diff -u "tests/golden/$g.out" build/snap.out >/dev/null; then
+        ok=0
+    fi
+    if [ -f "tests/golden/$g.err" ] && ! diff -u "tests/golden/$g.err" build/snap.err >/dev/null; then
+        ok=0
+    fi
+    if [ "$ok" = 1 ]; then
+        echo "L3snap $g: PASS"
+    else
+        echo "L3snap $g: FAIL rc=$rc want=$want"; FAIL=1
+        head -5 build/snap.err
+    fi
+}
+snap snap_trace 0   build/rvsim --trace - tests/guest-bin/t_arith.elf
+snap snap_regs  0   build/rvsim --dump-regs tests/guest-bin/t_hello.elf
+# t_hello 为 EXEC 链接（VMA 0x10000，见 readelf；0x100000 未映射 → 208），
+# 故取 .text 前 32 字节：--dump-mem 0x10000:32（任务文本的 0x100000 地址偏离申报）
+snap snap_mem   0   build/rvsim --dump-mem 0x10000:32 tests/guest-bin/t_hello.elf
+snap snap_limit 207 build/rvsim --max-steps 10 tests/guest-bin/t_bubble.elf
+# 修复轮 1（重要 5）新增：故障路径三方锁定（stdout 空 + stderr 诊断行 + rc 202）
+snap snap_fault 202 build/rvsim build/fault_ld.elf
+# 修复轮 1（重要 3）新增：-v brk 日志锁（brk_probe 探针 ELF：brk(base+8) 后
+# exit(0)；锁 "旧 brk -> 新 brk" 语义，旧实现恒打 "新 -> 新"）
+snap snap_brk   0   build/rvsim -v build/brk_probe.elf
+
+# L3 调试器会话快照（Task 13 分发 B，spec §6.2）：stdin 管道喂命令脚本，
+# stdout 快照 diff（修复轮 1 起 stderr 同受锁：<golden>.err 存在才 diff，
+# 会话 stderr 本应为空，暂不设 err golden）+ 退出码断言。会话钉死：
+#   session1 步进 4 + regs；session2 断点命中（entry=0x1010c）；session3
+#   内存查看 + c 跑完（guest-exit 透传 0）；session4 空 stdin（EOF→q）；
+#   session5 未知命令 + 重复断点报错 + 8 上限报错（互异地址至第 9 个互异触发）。
+# golden 逐字手核记录见 sdd/task-13-report.md（entry/前 4 指令按 objdump、
+# 初始 x2 按 build_stack 布局、ELF 头 32 字节对 snap_mem、终止 pc=0x10128 对 snap_regs）。
+dbg() { # dbg <golden> <want_rc> <printf-input> <elf>
+    local g=$1 want=$2 input=$3 elf=$4
+    printf "$input" | build/rvsim -s "tests/guest-bin/$elf" > build/dbg.out 2> build/dbg.err
+    local rc=$? ok=1
+    [ "$rc" -eq "$want" ] || ok=0
+    if [ -f "tests/golden/$g.out" ] && ! diff -u "tests/golden/$g.out" build/dbg.out >/dev/null; then
+        ok=0
+    fi
+    if [ -f "tests/golden/$g.err" ] && ! diff -u "tests/golden/$g.err" build/dbg.err >/dev/null; then
+        ok=0
+    fi
+    if [ "$ok" = 1 ]; then
+        echo "L3dbg $g: PASS"
+    else
+        echo "L3dbg $g: FAIL rc=$rc want=$want"; FAIL=1
+        head -5 build/dbg.err
+    fi
+}
+dbg dbg_session1 0 's 4\nr\nq\n'            t_hello.elf
+dbg dbg_session2 0 'b 0x000000000001010c\nc\nq\n' t_hello.elf
+dbg dbg_session3 0 'm 0x10000 32\nc\n'      t_hello.elf
+dbg dbg_session4 0 ''                       t_hello.elf
+dbg dbg_session5 0 'x\nb 0x10000\nb 0x10000\nb 0x10004\nb 0x10008\nb 0x1000c\nb 0x10010\nb 0x10014\nb 0x10018\nb 0x1001c\nb 0x10020\nq\n' t_hello.elf
 
 exit $FAIL

@@ -1,0 +1,6 @@
+rvsim debugger: loaded, stopped before entry pc=0x000000000001010c
+rvsim> 0000000000010000  7f454c4602010100  0000000000000000  |.ELF............|
+0000000000010010  0200f30001000000  0c01010000000000  |................|
+rvsim> PASS t_hello
+rvsim: stopped guest-exit code=0 pc=0x0000000000010128
+rvsim> 

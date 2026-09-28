@@ -1,5 +1,5 @@
 /* src/cpu.c —— RV64I 用户态模拟器：单步执行核心（Task 6/Task 8/Task 9/Task 10
-   + Task 11 分发 B build_stack）。
+   + Task 11 分发 B build_stack + Task 12 分发 A 可观测性字段填充）。
    rv_step 流程：pc 4 对齐检查 → mem_read 4 字节取指 → rv_decode →
    switch 执行 → 写回（rd!=0）→ pc+=4 → steps++（跳转类臂自行更新 pc
    并提前返回，见下）。
@@ -32,6 +32,17 @@
    exited/exit_code=205 并记录号码（sc_unsupported/unsupported_syscall_num），
    诊断输出由 main/trace 层完成，cpu 不依赖 stdio。EBREAK = 停机诊断
    （exited + exit_code=206，不推进 pc/steps）。
+   可观测性填充（Task 12 分发 A，M6-a 接口裁决 + 尾部追加申报）：
+   - 每步进入先清 has_dec/has_syscall；解码成功即填 last_dec/last_pc（本步
+     起始 pc），供 main 每步调 trace_step 生成 `T <seq> pc=… insn=… 名` 行
+     （终止型 ECALL/EBREAK 与故障路径不退休，main 门控不产 trace 行）；
+   - 各故障点填 fault_addr/fault_insn/fault_align：pc 取指对齐（addr=pc、
+     insn 未知=0、align=4）、未映射取指（addr=pc、insn=0）、非法指令
+     （addr=pc、insn=指令字）、访存对齐（addr=ea、align=2/4/8）、访存未映射
+     （addr=ea）、跳转目标未对齐（addr=target、align=4）——main 据此升级
+     §7 诊断（202 addr=、203 addr= align=N、204 word=0x…，台账 M-t）；
+   - ECALL 分发前快照号码/参数，分发后记 kind/返回值（has_syscall），供
+     main -v 里程碑日志（syscall 名/参/返回、brk/mmap/munmap 变化）。
    build_stack（Task 11/M5 分发 B，spec §3.4）：自 STACK_TOP 向下构造进程
    初始栈（布局与顺序见函数头注释），sp 16 对齐写 x2，a0/a1/a2 保持 0。 */
 
@@ -105,6 +116,28 @@ void rvsim_reset(rvsim *s)
     s->host_fd[2] = 2;
     s->sc_unsupported = false;
     s->unsupported_syscall_num = 0;
+    /* Task 12 分发 A（M6-a）尾部追加字段 */
+    s->last_dec.op = RV_OP_COUNT;   /* 解码残留位语义：无效标记 */
+    s->last_dec.rd = 0;
+    s->last_dec.rs1 = 0;
+    s->last_dec.rs2 = 0;
+    s->last_dec.raw = 0;
+    s->last_dec.imm = 0;
+    s->has_dec = false;
+    s->last_pc = 0;
+    s->fault_addr = 0;
+    s->fault_insn = 0;
+    s->fault_align = 0;
+    s->has_syscall = false;
+    s->sc_kind = 0;
+    s->sc_num = 0;
+    s->sc_args[0] = 0;
+    s->sc_args[1] = 0;
+    s->sc_args[2] = 0;
+    s->sc_args[3] = 0;
+    s->sc_args[4] = 0;
+    s->sc_args[5] = 0;
+    s->sc_ret = 0;
 }
 
 /* ---- 进程栈初始化（Task 11/M5 分发 B，spec §3.4 精确布局）----
@@ -194,26 +227,41 @@ int build_stack(rvsim *s, int argc, char **gargs)
 int rv_step(rvsim *s)
 {
     s->fault = RV_FV_NONE;
+    s->has_dec = false;                 /* M6-a：本步解码/系统调用快照先失效 */
+    s->has_syscall = false;
 
-    /* 1. 取指 pc 对齐（RV64I 无 C 扩展，指令恒 4 字节 4 对齐） */
+    /* 1. 取指 pc 对齐（RV64I 无 C 扩展，指令恒 4 字节 4 对齐）。
+       故障现场：addr=pc、指令字未知（fault_insn=0）、align=4。 */
     if (s->cpu.pc & 3u) {
+        s->fault_addr = s->cpu.pc;
+        s->fault_insn = 0;
+        s->fault_align = 4;
         s->fault = RV_FV_MISALIGNED;
         return s->fault;
     }
 
-    /* 2. 取指（先检查后使用，失败不产生副作用） */
+    /* 2. 取指（先检查后使用，失败不产生副作用）。故障现场：addr=pc。 */
     uint32_t insn;
     if (mem_read(&s->mem, s->cpu.pc, &insn, 4) != 0) {
+        s->fault_addr = s->cpu.pc;
+        s->fault_insn = 0;
         s->fault = RV_FV_UNMAPPED;
         return s->fault;
     }
 
-    /* 3. 解码（false = 保留/非法编码） */
+    /* 3. 解码（false = 保留/非法编码）。故障现场：addr=pc、insn=指令字。 */
     rv_dec d;
     if (!rv_decode(insn, &d)) {
+        s->fault_addr = s->cpu.pc;
+        s->fault_insn = insn;
         s->fault = RV_FV_ILLEGAL;
         return s->fault;
     }
+    /* M6-a：解码成功即记录本步现场（供 main 每步调 trace_step 产 trace 行；
+       只有 rv_step 返回 0——指令正常退休——时 trace 层才消费）。 */
+    s->last_dec = d;
+    s->last_pc = s->cpu.pc;
+    s->has_dec = true;
 
     /* 4. 执行：53 条臂全覆盖（Task 6 算术/移位 + Task 8 访存 + Task 9 控制流
        + Task 10 系统）。
@@ -261,7 +309,8 @@ int rv_step(rvsim *s)
        UNMAPPED）→ 截断/扩展写回。故障路径在任何访存生效/写回/pc/steps 之前
        返回，无部分副作用（spec §4.1 提交模型；加载本身即写回前最后一步）。
        加载截断：mem_read 只填低 w 字节（其余保持 0），按操作符号/零扩展；
-       store：只写低 w 字节（小端最低字节在低地址）。 */
+       store：只写低 w 字节（小端最低字节在低地址）。
+       故障现场（M6-a）：addr=ea、insn=指令字、对齐故障 align=访存宽度。 */
     case RV_LB:
     case RV_LBU:
     case RV_LH:
@@ -274,11 +323,16 @@ int rv_step(rvsim *s)
                    : (d.op == RV_LH || d.op == RV_LHU) ? 2u : 1u;
         uint64_t ea = a + (uint64_t)d.imm;
         if (ea & (w - 1u)) {
+            s->fault_addr = ea;
+            s->fault_insn = insn;
+            s->fault_align = w;
             s->fault = RV_FV_MISALIGNED;
             return s->fault;
         }
         uint64_t raw = 0;
         if (mem_read(&s->mem, ea, &raw, w) != 0) {
+            s->fault_addr = ea;
+            s->fault_insn = insn;
             s->fault = RV_FV_UNMAPPED;
             return s->fault;
         }
@@ -302,11 +356,16 @@ int rv_step(rvsim *s)
                    : (d.op == RV_SH) ? 2u : 1u;
         uint64_t ea = a + (uint64_t)d.imm;
         if (ea & (w - 1u)) {
+            s->fault_addr = ea;
+            s->fault_insn = insn;
+            s->fault_align = w;
             s->fault = RV_FV_MISALIGNED;
             return s->fault;
         }
         uint64_t val = b;
         if (mem_write(&s->mem, ea, &val, w) != 0) {
+            s->fault_addr = ea;
+            s->fault_insn = insn;
             s->fault = RV_FV_UNMAPPED;
             return s->fault;
         }
@@ -318,13 +377,17 @@ int rv_step(rvsim *s)
        与 pc 更新由臂内自行完成并提前返回；目标对齐检查先于任何写回/pc
        更新（故障零副作用契约，spec §4.1/§3.3）。JALR 目标先清 bit0 再判
        4 对齐，且用旧 rs1 计算（rd==rs1 时先求 t 后写回 pc+4）；分支仅在
-       taken 时目标才需对齐（未 taken 顺序推进 pc+4，无目标概念）。 */
+       taken 时目标才需对齐（未 taken 顺序推进 pc+4，无目标概念）。
+       目标未对齐故障现场（M6-a）：addr=target、align=4、insn=指令字。 */
     case RV_LUI:   res = (uint64_t)d.imm; break;               /* U 型 imm 已符号扩展 32→64 */
     case RV_AUIPC: res = s->cpu.pc + (uint64_t)d.imm; break;   /* pc 相对，按 2^64 回绕 */
     case RV_JAL: {
         uint64_t target = s->cpu.pc + (uint64_t)d.imm;
         if (target & 3u) {
-            s->fault = RV_FV_MISALIGNED;                       /* 先检查：rd 不写、pc 不变 */
+            s->fault_addr = target;                            /* 先检查：rd 不写、pc 不变 */
+            s->fault_insn = insn;
+            s->fault_align = 4;
+            s->fault = RV_FV_MISALIGNED;
             return s->fault;
         }
         if (d.rd != 0)
@@ -336,6 +399,9 @@ int rv_step(rvsim *s)
     case RV_JALR: {
         uint64_t target = (a + (uint64_t)d.imm) & ~(uint64_t)1; /* 清 bit0；a 为旧 rs1 */
         if (target & 3u) {
+            s->fault_addr = target;
+            s->fault_insn = insn;
+            s->fault_align = 4;
             s->fault = RV_FV_MISALIGNED;
             return s->fault;
         }
@@ -367,7 +433,10 @@ int rv_step(rvsim *s)
         if (taken) {
             uint64_t target = s->cpu.pc + (uint64_t)d.imm;
             if (target & 3u) {
-                s->fault = RV_FV_MISALIGNED;                   /* 分支本无写回，pc 亦未动 */
+                s->fault_addr = target;                        /* 分支本无写回，pc 亦未动 */
+                s->fault_insn = insn;
+                s->fault_align = 4;
+                s->fault = RV_FV_MISALIGNED;
                 return s->fault;
             }
             s->cpu.pc = target;
@@ -380,18 +449,31 @@ int rv_step(rvsim *s)
     /* ---- 系统（Task 10/M5 分发 A，spec §4.2）----
        FENCE/FENCE.I：单 hart 顺序一致，无副作用 → 落到底部普通提交路径
        （pc+=4、steps++；FENCE.I 的 imm 保留字段由 decode 判非法）。
-       ECALL：分发 rv_syscall（a7=x17，a0..a5=x10..x15）。kind=0 → val 直接写
-       a0=x10（ECALL 编码 rd 恒 0，decode 强制，通用写回路径不适用）后经底部
-       普通退休（pc+=4、steps++）；kind=1/2 → guest 终止（exited + 退出码；
-       kind=2 恒 205 并记录号码供 main/trace 诊断），提前返回不推进 pc/steps。
-       EBREAK：停机诊断 → exited + 206，提前返回不推进。 */
+       ECALL：分发 rv_syscall（a7=x17，a0..a5=x10..x15）。分发前快照号码/参数、
+       分发后记 kind/返回值（has_syscall，M6-a：-v 里程碑日志用）。kind=0 →
+       val 直接写 a0=x10（ECALL 编码 rd 恒 0，decode 强制，通用写回路径不适用）
+       后经底部普通退休（pc+=4、steps++）；kind=1/2 → guest 终止（exited +
+       退出码；kind=2 恒 205 并记录号码供 main/trace 诊断），提前返回不推进
+       pc/steps（指令未退休，main 门控不产 trace 行）。
+       EBREAK：停机诊断 → exited + 206，提前返回不推进（同上不退休）。 */
     case RV_FENCE:
     case RV_FENCEI:
         break;
     case RV_ECALL: {
-        rv_sc_ret r = rv_syscall(s, s->cpu.x[17], s->cpu.x[10], s->cpu.x[11],
-                                 s->cpu.x[12], s->cpu.x[13], s->cpu.x[14],
-                                 s->cpu.x[15]);
+        rv_sc_ret r;
+        s->sc_num = s->cpu.x[17];
+        s->sc_args[0] = s->cpu.x[10];
+        s->sc_args[1] = s->cpu.x[11];
+        s->sc_args[2] = s->cpu.x[12];
+        s->sc_args[3] = s->cpu.x[13];
+        s->sc_args[4] = s->cpu.x[14];
+        s->sc_args[5] = s->cpu.x[15];
+        r = rv_syscall(s, s->cpu.x[17], s->cpu.x[10], s->cpu.x[11],
+                       s->cpu.x[12], s->cpu.x[13], s->cpu.x[14],
+                       s->cpu.x[15]);
+        s->has_syscall = true;
+        s->sc_kind = r.kind;
+        s->sc_ret = r.val;
         if (r.kind == 1) {
             s->exited = true;
             s->exit_code = (int)r.val;
@@ -414,6 +496,8 @@ int rv_step(rvsim *s)
         s->exit_code = RVSIM_EX_EBREAK;
         return s->fault;                       /* 不推进 pc、不计数 */
     default:                                   /* RV_OP_COUNT 及越界枚举：不可达防御 */
+        s->fault_addr = s->cpu.pc;
+        s->fault_insn = insn;
         s->fault = RV_FV_ILLEGAL;
         return s->fault;
     }
