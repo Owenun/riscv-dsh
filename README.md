@@ -10,9 +10,38 @@ RVSim 是一个用 C99 实现的 RV64I（+Zifencei）用户态指令集模拟器
 - **可观测性**：`-v/-vv` 分级日志、`--trace` 逐指令 trace、`--dump-regs`、`--dump-mem A:L`、`--max-steps N`（默认 1e8，命中 → 207）、`-s` 交互调试器
 - **精确故障诊断**：非法指令/未映射/未对齐/不支持 syscall/步限等均输出 PC + 指令字/地址的结构化诊断行，绝不静默（完整退出码表见规格 §7）
 
-## 构建与测试
+## 环境要求
 
-前置：WSL Ubuntu 24.04、gcc；测试程序交叉编译所用 RISC-V 工具链的路径与验证方法见 [TOOLCHAIN.md](TOOLCHAIN.md)（只需改 Makefile 的 `CROSS` 一处即可迁移）。
+| 组件 | 要求 | 项目验证环境（实测量） |
+|------|------|------------------------|
+| 宿主 OS | Linux x86-64（guest 内存以 memcpy 直映宿主，要求小端；WSL2 亦可） | Ubuntu 24.04.4 LTS（WSL2），x86_64 |
+| 宿主编译器 | 支持 C99 的 gcc（代码按 `-std=c99 -Wall -Wextra -pedantic` 0 警告标准开发） | gcc 13.3.0 |
+| 构建工具 | GNU Make、bash（测试脚本为 bash） | GNU Make 4.3 / bash 5.2.21 |
+| RISC-V 交叉工具链 | riscv64 gcc + binutils，需支持 `-march=rv64i -mabi=lp64`；**仅 `make test` / `make guest` / `make bench` 需要** | Buildroot 2025.02.18 产出：gcc 13.4.0 / binutils 2.43.1（`riscv64-buildroot-linux-musl-` 前缀） |
+
+要点：
+
+- **只想编译模拟器本体**：`make` 即可，不依赖任何交叉工具链。
+- **跑测试或基准必须先备好交叉工具链**：guest 测试程序不在仓库中（`*.elf` 被 ignore），由 `tests/build_guest.sh` / `tests/build_bench.sh` 现场从源码编译。Makefile 的 `CROSS` 默认指向开发者的私有 Buildroot 树，迁移时在命令行覆盖即可，例如：
+
+  ```bash
+  make test CROSS=/path/to/your/riscv64-unknown-linux-musl-
+  ```
+
+  工具链是否可用，用 [TOOLCHAIN.md](TOOLCHAIN.md) 的最小 rv64i 程序验证命令确认（能编出静态 RV64I ELF 即可）。
+- **获取与项目同源的工具链**（Buildroot 2025.02.18，官方流程）：
+
+  ```bash
+  wget https://buildroot.org/downloads/buildroot-2025.02.18.tar.gz
+  tar xf buildroot-2025.02.18.tar.gz && cd buildroot-2025.02.18
+  make qemu_riscv64_virt_defconfig
+  make menuconfig    # Toolchain 菜单：C library 选 musl、GCC compiler version 选 13.x
+  make toolchain     # 仅构建工具链，产物在 output/host/bin/
+  ```
+
+  然后以 `CROSS=$PWD/output/host/bin/riscv64-buildroot-linux-musl-` 运行上述 make 目标（具体菜单项以该版本 Buildroot 文档为准）。其他发行版打包的 riscv64 工具链（如 `gcc-riscv64-linux-gnu`）理论上同样只需改 `CROSS`，但本仓库未逐一验证，请以 TOOLCHAIN.md 的验证程序通过为准。
+
+## 构建与测试
 
 ```bash
 make && make test
