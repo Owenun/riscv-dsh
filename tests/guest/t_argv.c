@@ -21,7 +21,6 @@ static void fail(const char *why) {
 }
 int main(int argc, char **argv) {
     unsigned long *aux;
-    const unsigned char *rnd = 0;
     int i, seen_pagesz = 0, seen_random = 0;
 
     if (argc != 3) fail("argc");
@@ -36,10 +35,12 @@ int main(int argc, char **argv) {
     }
 
     /* auxv（envp NULL 之后，16 字节/对）：AT_PAGESZ=6 → 4096；
-       AT_RANDOM=25 → 非 0 指针；AT_NULL=0 终止（上限 32 对防野走） */
+       AT_RANDOM=25 → 非 0 指针；AT_NULL=0 终止（上限 32 对防野走）。
+       AT_RANDOM 指向的 16 字节内容（rvsim 固定 0x42×16）由 L0 test_stack
+       钉死——native 侧内核给真随机字节，guest 层不做内容断言。 */
     for (i = 0; i < 32 && aux[0] != 0; i++, aux += 2) {
         if (aux[0] == 6 && aux[1] == 4096) seen_pagesz = 1;
-        if (aux[0] == 25 && aux[1] != 0) { seen_random = 1; rnd = (const unsigned char *)aux[1]; }
+        if (aux[0] == 25 && aux[1] != 0) seen_random = 1;
     }
     if (aux[0] != 0) fail("auxv-unterminated");
     if (!seen_pagesz) fail("auxv-pagesz");
