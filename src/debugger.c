@@ -186,6 +186,19 @@ int debugger_run(rvsim *s, uint64_t max_steps, int verbose, int *out_code)
             *out_code = g.stopped ? g.stop_code : 0;
             return 1;
         }
+        if (strchr(line, '\n') == NULL && !feof(stdin)) {
+            /* M7 分发 A（评审轻微 3）：超长行（>= sizeof line-1 字符且其后
+               尚有输入）确定性处理——整行拒绝并循环消费残留，残留不得被
+               fgets 拆成后续命令逐段回显 unknown command（dbg_session7
+               回归锁）。恰好填满缓冲且紧跟 EOF 时不误判（feof 已置位，
+               按普通命令处理）。 */
+            int ch;
+            while ((ch = fgetc(stdin)) != EOF && ch != '\n') {
+            }
+            fputs("error: line too long\n", stdout);
+            fflush(stdout);
+            continue;
+        }
         line[strcspn(line, "\n")] = '\0';
         p = skip_ws(line);
         if (*p == '\0')
@@ -270,6 +283,12 @@ int debugger_run(rvsim *s, uint64_t max_steps, int verbose, int *out_code)
                     memmove(&g.bp[i], &g.bp[i + 1],
                             (g.nbp - i - 1) * sizeof g.bp[0]);
                     g.nbp--;
+                    /* M7 分发 A（评审轻微 2）：删去的若正是刚命中挂起的断点，
+                       连带清除 bp_pause——否则挂起态残留，后续 c 会把"单步
+                       跨过命中点"用在已不存在的断点上，同址重设后的首次
+                       命中被静默跳过（dbg_session6 回归锁）。 */
+                    if (g.bp_pause && g.pause_pc == a)
+                        g.bp_pause = false;
                     printf("breakpoint at 0x%016llx removed\n",
                            (unsigned long long)a);
                 }

@@ -29,7 +29,7 @@ void cli_print_usage(FILE *out)
         "  --dump-regs     print x0..x31 and pc on stop\n"
         "  --dump-mem A:L  hexdump [A, A+L) on stop\n"
         "  --max-steps N   instruction limit (default 100000000, exit 207 on hit)\n"
-        "  -s              interactive debugger (minimal in M6-A)\n"
+        "  -s              interactive debugger\n"
         "  -h              this help\n");
 }
 

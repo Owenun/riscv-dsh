@@ -150,7 +150,7 @@ while (steps < max_steps) {
 | 63 | read | `read(int fd, void *buf, size_t n)` | 仅 `fd=0`：转发宿主 stdin，返回读到的字节数 | fd≠0 → -EBADF |
 | 64 | write | `write(int fd, const void *buf, size_t n)` | 仅 `fd∈{1,2}`：转发宿主 stdout/stderr，返回写入数 | 其余 → -EBADF |
 | 214 | brk | `brk(void *addr)` | addr=0 或超出 `[brk_base, brk_base+32MiB]` → 返回当前 brk（失败不报错，Linux 语义）；否则扩展登记区并返回新 brk | — |
-| 222 | mmap | `mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off)` | 仅匿名私有：`flags` 必含 `MAP_PRIVATE(0x02)|MAP_ANONYMOUS(0x20)` 且 `fd=-1`；addr 提示忽略；从 MMAP_BASE bump 分配页对齐区域，返回地址 | len=0 → -EINVAL；非法 flags/fd → -EINVAL；超 64MiB → -ENOMEM |
+| 222 | mmap | `mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off)` | 仅匿名私有：`flags` 必含 `MAP_PRIVATE(0x02)|MAP_ANONYMOUS(0x20)` 且 `fd=-1`；addr 提示忽略；从 MMAP_BASE bump 分配页对齐区域，返回地址 | len=0 → -EINVAL；非法 flags/fd → -EINVAL；超 64MiB → -ENOMEM；备注（M-4）：flags 允许携带其他位（按位与判定 MAP_PRIVATE|MAP_ANONYMOUS），addr 提示一律忽略 |
 | 215 | munmap | `munmap(void *addr, size_t len)` | 仅允许完整匹配一个 mmap 分配区（addr 与 len 精确相等），成功后该区间回收为未映射 | 其余 → -EINVAL |
 | 113 | clock_gettime | `clock_gettime(clockid_t id, struct timespec *tp)` | `id=0(CLOCK_REALTIME)/1(CLOCK_MONOTONIC)` 取宿主时钟写 `{i64 tv_sec; i64 tv_nsec}` | 其余 → -EINVAL |
 | 160 | uname | `uname(struct utsname *buf)` | 写 390 字节（6×65）：`Linux / rvsim / 6.8.0-rvsim / #1 rvsim / riscv64 / (none)` | — |

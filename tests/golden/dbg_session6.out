@@ -1,0 +1,7 @@
+rvsim debugger: loaded, stopped before entry pc=0x000000000001010c
+rvsim> breakpoint 1 set at 0x000000000001010c
+rvsim> breakpoint hit: pc=0x000000000001010c insn=0x00001197 RV_AUIPC
+rvsim> breakpoint at 0x000000000001010c removed
+rvsim> breakpoint 1 set at 0x000000000001010c
+rvsim> breakpoint hit: pc=0x000000000001010c insn=0x00001197 RV_AUIPC
+rvsim> 

@@ -93,15 +93,22 @@ int elf_load(rv_mem *m, const char *path, rv_elf *out) {
         free(buf); return -4;
     }
 
-    /* entry：4 对齐、在窗口内、且落在某 PT_LOAD 装载范围（含 bss）内 */
+    /* entry：4 对齐、加 bias 后在窗口内、且落在某 PT_LOAD 装载范围（含 bss）
+       内。entry 与 p_vaddr 同域（标准 ELF 语义），M7 分发 A 补测暴露的缺陷
+       修复：旧实现拿未加 bias 的 e_entry 对比加了 bias 的段 VA，且
+       out->entry 未加 bias——真实 ET_DYN 文件（e_entry 为相对地址）必然
+       -7 拒载；ET_EXEC bias=0 行为不变。 */
     uint64_t entry = rd64(buf + 24);
     int hit = 0;
-    if ((entry & 3) == 0 && entry >= MEM_BASE && entry - MEM_BASE < MEM_SIZE) {
-        for (uint16_t i = 0; i < phnum && !hit; i++) {
-            const uint8_t *p = base + (uint64_t)i * ELF_PHDR_SIZE;
-            if (rd32(p) != PT_LOAD) continue;
-            uint64_t va = rd64(p + 16) + bias;
-            if (entry >= va && entry < va + rd64(p + 40)) hit = 1;
+    if (entry <= UINT64_MAX - bias) {              /* entry+bias 溢出按越界拒载 */
+        uint64_t entry_va = entry + bias;
+        if ((entry & 3) == 0 && entry_va >= MEM_BASE && entry_va - MEM_BASE < MEM_SIZE) {
+            for (uint16_t i = 0; i < phnum && !hit; i++) {
+                const uint8_t *p = base + (uint64_t)i * ELF_PHDR_SIZE;
+                if (rd32(p) != PT_LOAD) continue;
+                uint64_t va = rd64(p + 16) + bias;
+                if (entry_va >= va && entry_va < va + rd64(p + 40)) hit = 1;
+            }
         }
     }
     if (!hit) { free(buf); return -7; }
@@ -119,7 +126,7 @@ int elf_load(rv_mem *m, const char *path, rv_elf *out) {
            必然覆盖写范围，mem_write 不可能失败；保留以防上方不变式日后被改动。 */
         if (filesz > 0 && mem_write(m, va, buf + off, filesz) != 0) { free(buf); return -4; }
     }
-    out->entry = entry;
+    out->entry = (entry <= UINT64_MAX - bias) ? entry + bias : entry;
     out->brk_base = page_up(brk_max);
     out->bias = bias;
     free(buf);

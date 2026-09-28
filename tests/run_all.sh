@@ -51,6 +51,25 @@ run_guest() { # run_guest <name> [guest-args...]
         echo "L1 $name: OUTPUT MISMATCH"; FAIL=1
     fi
 }
+# 错误路径 guest（M7 分发 A，spec §7/§8.1）：t_badcall/t_maxsteps/t_misaligned
+# —— 程序自身到不了 PASS 输出：golden stdout 为空（空 golden 文件），断言三方
+# = 退出码 + stderr 首行前缀（grep -F 固定串）+ stdout 与 golden 逐字一致。
+# rvsim-opts 透传在 ELF 之前（CLI 约定：选项只出现在 ELF 之前）。
+run_guest_err() { # run_guest_err <name> <expect_exit> <stderr_first_line_prefix> [rvsim-opts...]
+    local name=$1 want=$2 prefix=$3; shift 3
+    local out="build/$name.stdout" err="build/$name.stderr"
+    build/rvsim "$@" "tests/guest-bin/$name.elf" >"$out" 2>"$err"
+    local rc=$? ok=1
+    [ "$rc" -eq "$want" ] || ok=0
+    head -n 1 "$err" | grep -qF -- "$prefix" || ok=0
+    diff -u "tests/golden/$name.out" "$out" >/dev/null || ok=0
+    if [ "$ok" = 1 ]; then
+        echo "L1err $name: PASS"
+    else
+        echo "L1err $name: FAIL rc=$rc want=$want"; FAIL=1
+        head -3 "$err"
+    fi
+}
 RVSIM_CAN_RUN=${RVSIM_CAN_RUN:-1}
 if [ "$RVSIM_CAN_RUN" = 1 ]; then
     run_guest t_hello
@@ -59,6 +78,15 @@ if [ "$RVSIM_CAN_RUN" = 1 ]; then
     run_guest t_branch; run_guest t_call; run_guest t_recursion; run_guest t_bubble
     run_guest t_string; run_guest t_fib
     run_guest t_argv one two    # argc/argv/envp/auxv 透传（spec §3.4，golden 手算）
+    # M7 分发 A（spec §8.4 程序清单收口）：brk/mmap/uname/clock 正常路径。
+    # 这 4 个程序 mini-crt 新原语（gbrk/gmmap/gmunmap/guname/gclock）在 shim.c
+    # 无宿主对应实现 → 只走 rvsim 执行路径（见下方 NATIVE_SKIP）。
+    run_guest t_brk; run_guest t_mmap; run_guest t_uname; run_guest t_clock
+    # 错误路径三程序（t_badcall→205 / t_maxsteps→207 / t_misaligned→203），
+    # golden stdout 为空；断言细节见 run_guest_err 头注释。
+    run_guest_err t_badcall     205 "rvsim: unsupported syscall 9999"
+    run_guest_err t_maxsteps    207 "rvsim: step-limit" --max-steps 1000
+    run_guest_err t_misaligned  203 "rvsim: fault misaligned"
 fi
 
 # L2 elf：装载好 ELF（依赖上方 build_guest 产出的 t_hello.elf）
@@ -103,6 +131,15 @@ smoke_rc usage-neg-dumpmem-200 200 build/rvsim --dump-mem -1:32 tests/guest-bin/
 extra_args() { # extra_args <name>：与 run_guest 一致的固定 guest-args（未定义则空）
     if [ "$1" = t_argv ]; then echo "one two"; fi
 }
+# NATIVE_SKIP（M7 分发 A）：这些 guest 程序不进 L1-native/L2 双编译差分。
+# 原因：tests/host/shim.c 只复刻 write/exit —— brk(214)/mmap(222)/munmap(215)/
+# uname(160)/clock_gettime(113) 在宿主侧无对应实现（程序引用 gbrk/gmmap/
+# gmunmap/guname/gclock 原语会链接失败）；t_badcall（gbadsys 依赖 rvsim 的
+# 未知号码 205 拒绝路径）、t_maxsteps（死循环依赖 rvsim --max-steps→207）、
+# t_misaligned（依赖 rvsim 未对齐访存故障→203）在宿主原生执行语义不同构，
+# 差分无意义。这些程序只走 run_guest / run_guest_err（rvsim 执行路径）。
+NATIVE_SKIP="t_brk t_mmap t_uname t_clock t_badcall t_maxsteps t_misaligned"
+native_skip() { case " $NATIVE_SKIP " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 run_native() { # run_native <name> [args...]
     local name=$1; shift
     local out="build/native_$name.stdout"
@@ -122,6 +159,7 @@ run_native() { # run_native <name> [args...]
 }
 for t in tests/guest/t_*.c; do
     n=$(basename "$t" .c)
+    native_skip "$n" && continue
     # shellcheck disable=SC2046  # extra_args 有意按空白展开为多个参数
     run_native "$n" $(extra_args "$n")
 done
@@ -154,6 +192,7 @@ RVSIM_L2=${RVSIM_L2:-1}
 if [ "$RVSIM_L2" = 1 ]; then
     for t in tests/guest/t_*.c; do
         n=$(basename "$t" .c)
+        native_skip "$n" && continue
         # shellcheck disable=SC2046
         run_l2 "$n" $(extra_args "$n")
     done
@@ -236,5 +275,14 @@ dbg dbg_session2 0 'b 0x000000000001010c\nc\nq\n' t_hello.elf
 dbg dbg_session3 0 'm 0x10000 32\nc\n'      t_hello.elf
 dbg dbg_session4 0 ''                       t_hello.elf
 dbg dbg_session5 0 'x\nb 0x10000\nb 0x10000\nb 0x10004\nb 0x10008\nb 0x1000c\nb 0x10010\nb 0x10014\nb 0x10018\nb 0x1001c\nb 0x10020\nq\n' t_hello.elf
+# M7 分发 A（评审轻微 2 回归锁）session6：断点删除须连带清除 bp_pause ——
+# 命中 → d 删除 → 同址重设 → c 必须再次命中（旧实现 bp_pause 残留导致
+# 第二次命中被单步跨过而丢失）。
+dbg dbg_session6 0 'b 0x000000000001010c\nc\nd 0x000000000001010c\nb 0x000000000001010c\nc\nq\n' t_hello.elf
+# M7 分发 A（评审轻微 3 回归锁）session7：超长行（>255 字符）确定性处理 ——
+# 整行拒绝（error: line too long）并消费残留；残留不得被拆成后续命令逐段
+# 回显 unknown command（旧 fgets 残留行为）。
+long_line=$(printf 'a%.0s' $(seq 1 300))
+dbg dbg_session7 0 "${long_line}\nq\n" t_hello.elf
 
 exit $FAIL
