@@ -18,7 +18,7 @@ RVSim 是一个用 C99 实现的 RV64I（+Zifencei）用户态指令集模拟器
 make && make test
 ```
 
-`make test` 全绿是每个里程碑 commit 的前置条件。当前矩阵：**1500 行 PASS**（87 个分层用例组 + 1413 条框架级断言），无 FAIL，退出码 0。若只编译而不跑测试：`make`；只构建 guest ELF：`make guest`（产出 `tests/guest-bin/*.elf`，`make test` 也会自动构建）。
+`make test` 全绿是每个里程碑 commit 的前置条件。当前矩阵：**1503 行 PASS**（90 个分层用例组 + 1413 条框架级断言），无 FAIL，退出码 0。若只编译而不跑测试：`make`；只构建 guest ELF：`make guest`（产出 `tests/guest-bin/*.elf`，`make test` 也会自动构建）。
 
 ## 运行示例
 
@@ -115,7 +115,7 @@ rvsim> q
 | L1err | 3 | 错误路径 guest：不支持 syscall → 205、`--max-steps` 步限 → 207、未对齐访存 → 203（退出码 + stderr 诊断前缀 + 空 stdout 三方断言） |
 | L1-native | 14 | 同一 guest 源码宿主双编译（配 mini-shim 复刻 write/exit），独立验证 C 语义与金标准一致 |
 | L2 | 14 | 双编译差分：rvsim 执行与宿主 native 执行的 stdout + 退出码两侧必须一致（同一 C 语义在两种 ISA 上等价） |
-| L3snap | 6 | CLI 可观测性 golden 快照：trace 行格式、寄存器/内存 dump、步限、故障现场、`-v` brk 日志逐字锁定（含退出码 + stderr） |
+| L3snap | 9 | CLI 可观测性 golden 快照：trace 行格式、寄存器/内存 dump、步限、故障现场、`-v` brk 日志、ET_DYN 端到端与 204/206 单词级探针逐字锁定（含退出码 + stderr） |
 | L3dbg | 7 | 调试器会话快照：stdin 管道喂命令脚本，stdout 逐字锁定（步进/断点命中/断点删除/超长行拒绝） |
 | L4 | 8 | 畸形 ELF 注入：截断/错 class/错 machine/错 magic/超 phnum/坏 entry/PT_NLOAD/恰满 64 段，逐个断言细分错误码 |
 | L4smoke | 5 | main 级退出码冒烟：文件打不开 → 200、坏 ELF → 201、CLI 负数选项值 → 200 等 |
@@ -137,3 +137,4 @@ rvsim> q
 - 无 M/A/C/F/D、Zicsr、用户态 CSR 指令 → 非法指令 204
 - 平坦内存模型：无虚拟内存/页表/权限位
 - 对齐访问不仿真：未对齐访存/跳转按故障处理（203），不模拟 Linux 内核的对齐修补
+- 客户内存视图假设宿主小端（memcpy 直映 guest 内存），当前仅支持 x86-64 宿主

@@ -179,7 +179,7 @@ rvsim [OPTIONS] ELF [GUEST_ARGS...]
 ### 6.2 调试器（`-s`，提示符 `rvsim> `，stdin 逐行）
 | 命令 | 行为 |
 |------|------|
-| `s [N]` | 单步执行 N 条（默认 1），每步打印 `pc insn 助记名` |
+| `s [N]` | 单步执行 N 条（默认 1），每步打印一行，采用与 `--trace` 相同的 T 行格式（`T <seq> pc=… insn=… 助记名[ rd=…]`，复用 trace_step；seq 为全局退休步数） |
 | `c` | 连续执行至断点/停机 |
 | `r` | 打印全部 GPR + pc（同 --dump-regs 格式） |
 | `m A L` | 打印 [A,A+L) 内存（同 --dump-mem 格式） |

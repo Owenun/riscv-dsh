@@ -17,7 +17,7 @@
 ```make
 CROSS ?= /home/xzc/projects/mini-qemu/work/output/host/bin/riscv64-buildroot-linux-musl-
 GUEST_CC = $(CROSS)gcc
-GUEST_CFLAGS = -march=rv64i -mabi=lp64 -nostdlib -static -O2 -Wall -Wextra
+GUEST_CFLAGS = -march=rv64i -mabi=lp64 -nostdlib -static -ffreestanding -fno-stack-protector -O2 -Wall -Wextra
 ```
 
 工具链迁移（如 mini-qemu 构建树被清理）时只需改 `CROSS` 一处。

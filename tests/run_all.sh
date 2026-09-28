@@ -243,6 +243,19 @@ snap snap_fault 202 build/rvsim build/fault_ld.elf
 # 修复轮 1（重要 3）新增：-v brk 日志锁（brk_probe 探针 ELF：brk(base+8) 后
 # exit(0)；锁 "旧 brk -> 新 brk" 语义，旧实现恒打 "新 -> 新"）
 snap snap_brk   0   build/rvsim -v build/brk_probe.elf
+# 终审修复波（重要 1/2）新增 3 锁（探针 ELF 均由 tests/make_snap_elfs.sh 现场
+# 生成，构造注释在该脚本内）：
+#   snap_etdyn —— ET_DYN 真实端到端（重要 1）：etdyn_probe.elf e_type=3、段
+#       vaddr/entry 相对域 0x10000，经 main 全路径（bias 后 entry=0x110000
+#       执行、build_stack 栈、write/exit syscall）打印 "PASS etdyn" 且 exit 0；
+#       stdout/stderr/rc 三方锁（M7-A "entry 未加 bias" 类缺陷的 main 级防线）。
+#   snap_illegal —— 单词级 .word 0xFFFFFFFF → 204 + stderr `illegal insn …
+#       word=0xffffffff`、stdout 空（重要 2，三方锁）。
+#   snap_ebreak —— 单词级 .word 0x00100073 → 206 + stderr `rvsim: ebreak
+#       pc=0x10000`、stdout 空（重要 2，三方锁）。
+snap snap_etdyn   0   build/rvsim build/etdyn_probe.elf
+snap snap_illegal 204 build/rvsim build/illegal.elf
+snap snap_ebreak  206 build/rvsim build/ebreak.elf
 
 # L3 调试器会话快照（Task 13 分发 B，spec §6.2）：stdin 管道喂命令脚本，
 # stdout 快照 diff（修复轮 1 起 stderr 同受锁：<golden>.err 存在才 diff，
